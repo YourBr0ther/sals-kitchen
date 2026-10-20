@@ -1,9 +1,15 @@
-import type OpenAI from "openai";
+import OpenAI from "openai";
 import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROFILE_LISTS, type ProfileChange, type ProfileList, type User } from "../db";
-import { addDays, isDate, localDate, weekStart } from "../dates";
+import { addDays, isDate, localDate, weekday, weekStart } from "../dates";
 import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
-import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS } from "../memory";
-import { extractRecipe, NoRecipeError, type Recipe } from "../recipe";
+import { logActivity } from "../activity";
+import { describeLlmError } from "../llm";
+import { recordFeedback, type Verdict } from "../feedback";
+import { buildGroceryList } from "../groceries";
+import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS, windowRows } from "../memory";
+import { changePantry } from "../pantry";
+import { extractRecipe, NoRecipeError, type Recipe, recipeFromText } from "../recipe";
+import { autoTag } from "../tagger";
 import { webSearch } from "../web";
 import { getWeek, updateNight } from "../week";
 import { weekBlock } from "./prompt";
@@ -173,6 +179,70 @@ export const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "save_recipe_from_chat",
+      description:
+        "Ask to save a recipe the person sent in this chat, as a photo (recipe card, cookbook page, screenshot) or as pasted text, into the Mealie recipe box. " +
+        "The app reads the recipe from their latest message that has one. If there's no complete recipe there, you get an error and no button is shown. " +
+        "Otherwise they get an approve button.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "The recipe's name, if you can tell" },
+          plan_for: { type: "string", description: "YYYY-MM-DD to put it on after saving" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "make_grocery_list",
+      description:
+        "Ask to write the week's grocery list into Mealie from the dinners on the ticket. The person gets an approve button. " +
+        "The list is scaled to the household, combines ingredients across recipes, and leaves off staples and what's already in the kitchen. " +
+        "Making it again replaces the old one, keeping anything already checked off.",
+      parameters: {
+        type: "object",
+        properties: { week_of: { type: "string", description: "Any date (YYYY-MM-DD) in the week. Defaults to this week." } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_pantry",
+      description:
+        "Change the household's list of what's already in the kitchen (shared by everyone). Add things they say they have or just bought, " +
+        "or that you see in a fridge or pantry photo; remove things they used up or ran out of. Items on it are left off grocery lists.",
+      parameters: {
+        type: "object",
+        properties: {
+          add: { type: "array", items: { type: "string" }, description: 'Short names, e.g. "spinach", "chicken thighs"' },
+          remove: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "log_dinner",
+      description:
+        "Record how a planned dinner went for the person you're talking to, when they tell you. This rates the recipe in Mealie and marks it made.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "YYYY-MM-DD of the dinner" },
+          verdict: { type: "string", enum: ["loved", "fine", "not_again", "skipped"], description: '"skipped" means they didn\'t end up making it' },
+          comment: { type: "string", description: "What they said about it, in a few words" },
+        },
+        required: ["date", "verdict"],
+      },
+    },
+  },
 ];
 
 export const TOOL_LABELS: Record<string, string> = {
@@ -187,6 +257,10 @@ export const TOOL_LABELS: Record<string, string> = {
   update_profile: "Asking to update a profile",
   remember: "Making a note",
   forget: "Crossing that out",
+  save_recipe_from_chat: "Reading the recipe",
+  make_grocery_list: "Asking to make the grocery list",
+  update_pantry: "Updating the kitchen list",
+  log_dinner: "Writing down how it went",
 };
 
 export interface ToolContext {
@@ -194,7 +268,7 @@ export interface ToolContext {
   /** pending action ids created during this turn */
   actions: number[];
   /** what the client should refresh after the turn */
-  changed: Set<"week" | "profiles">;
+  changed: Set<"week" | "profiles" | "pantry">;
   /** facts saved to this person's memory during the turn */
   remembered: string[];
   /** web text is somewhere in what the model can see; memory changes then need the person's approval */
@@ -222,6 +296,20 @@ function describeChange(name: string, change: ProfileChange): string {
 }
 
 type Args = Record<string, unknown>;
+
+/**
+ * The recipe text from the person's latest message that has one: a photo's transcription
+ * or a long pasted message. Only their own messages, never web pages, are read.
+ */
+function recipeSourceText(userId: number): string | null {
+  const users = windowRows(userId).filter((r) => r.role === "user").slice(-6).reverse();
+  for (const r of users) {
+    const notes = (JSON.parse(r.payload) as { photoNotes?: string[] }).photoNotes ?? [];
+    const text = [r.content, ...notes].join("\n\n").trim();
+    if (notes.length || r.content.length >= 150) return text;
+  }
+  return null;
+}
 
 function withHeadings(lines: string[], headings?: { at: number; title: string }[]): string[] {
   if (!headings?.length) return lines;
@@ -276,6 +364,13 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
         }
       }
       ctx.changed.add("week");
+      const done = nights.filter((n) => isDate(n.date) && !errors.some((e) => e.startsWith(`${n.date}:`)));
+      if (done.length) {
+        const what = done.map((n) =>
+          n.status === "off" ? `${weekday(n.date as string)} off` : n.title ? `${weekday(n.date as string)}: ${n.title}` : `${weekday(n.date as string)} cleared`,
+        );
+        logActivity(ctx.user.id, `planned with Sal: ${what.join(", ")}`);
+      }
       const first = nights.find((n) => isDate(n.date))?.date as string | undefined;
       return { updated: nights.length - errors.length, errors, week: weekBlock(await getWeek(first)) };
     }
@@ -374,13 +469,61 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       const id = createAction(ctx, "update_profile", { userId: target.id, change }, summary);
       return { status: "waiting for approval", actionId: id };
     }
+    case "save_recipe_from_chat": {
+      const source = recipeSourceText(ctx.user.id);
+      if (!source) return { error: "There's no recipe in their recent messages. Ask them to paste it or send a photo of it." };
+      let recipe: Recipe;
+      try {
+        recipe = await recipeFromText(source, typeof args.title === "string" ? args.title : "");
+      } catch (e) {
+        return { error: `Can't save that one: ${(e as Error).message} Ask for a clearer photo or the full text.` };
+      }
+      const planFor = isDate(args.plan_for) ? args.plan_for : null;
+      const id = createAction(ctx, "import_recipe", { recipe, planFor }, `Save "${recipe.name}" to the recipe box`);
+      return {
+        status: "waiting for approval",
+        actionId: id,
+        name: recipe.name,
+        ingredients: recipe.recipeIngredient.length,
+        steps: recipe.recipeInstructions.length,
+      };
+    }
+    case "make_grocery_list": {
+      const start = weekStart(isDate(args.week_of) ? args.week_of : localDate());
+      const week = await getWeek(start);
+      const planned = week.nights.filter((n) => n.cooking && n.title);
+      if (!planned.length) return { error: "Nothing's planned that week yet, so there's nothing to shop for." };
+      const id = createAction(ctx, "make_grocery_list", { start }, `Make the grocery list in Mealie for the week of ${start} (${planned.length} dinners)`);
+      return { status: "waiting for approval", actionId: id };
+    }
+    case "update_pantry": {
+      const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 30) : []);
+      const r = changePantry(ctx.user.id, strings(args.add), strings(args.remove));
+      ctx.changed.add("pantry");
+      return r;
+    }
+    case "log_dinner": {
+      if (!isDate(args.date)) return { error: "Need the dinner's date." };
+      const verdict = ["loved", "fine", "not_again", "skipped"].includes(String(args.verdict)) ? (args.verdict as Verdict) : null;
+      if (!verdict) return { error: "verdict must be loved, fine, not_again, or skipped." };
+      try {
+        const r = await recordFeedback(ctx.user, args.date, verdict, typeof args.comment === "string" ? args.comment : null);
+        ctx.changed.add("week");
+        return { saved: true, dinner: r.title, warning: r.warning };
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
+    }
     default:
       return { error: `Unknown tool ${name}` };
   }
 }
 
 /** Runs an approved action. Returns a one-line result for the chat. */
-export async function executeAction(actionId: number, user: User): Promise<{ ok: boolean; message: string; changed: ("week" | "profiles")[] }> {
+export async function executeAction(
+  actionId: number,
+  user: User,
+): Promise<{ ok: boolean; message: string; changed: ("week" | "profiles" | "pantry")[] }> {
   const d = getDb();
   const a = d.prepare("select * from pending_actions where id = ? and user_id = ?").get(actionId, user.id) as
     | { id: number; kind: string; args: string; status: string; summary: string }
@@ -392,16 +535,29 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
   const args = JSON.parse(a.args);
   try {
     let message: string;
-    const changed: ("week" | "profiles")[] = [];
-    if (a.kind === "import_recipe_url") {
+    const changed: ("week" | "profiles" | "pantry")[] = [];
+    if (a.kind === "import_recipe_url" || a.kind === "import_recipe") {
       // save exactly what was read when Sal asked; older requests only stored the URL
-      const { recipe: r, existed } = await importRecipe(args.recipe ?? (await extractRecipe(args.url)));
+      const recipe: Recipe = args.recipe ?? (await extractRecipe(args.url));
+      const { recipe: r, existed } = await importRecipe(recipe);
       message = existed ? `"${r.name}" was already in the recipe box (slug ${r.slug}).` : `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
+      if (!existed) {
+        logActivity(user.id, `saved ${r.name} to the recipe box`);
+        // filing it is nice to have; a hiccup here shouldn't undo the save
+        const filed = await autoTag(r.slug, recipe).catch((e) => console.warn(`[tagger] ${r.slug}:`, e));
+        if (filed?.tags.length) message += ` Tagged ${filed.tags.join(", ")}.`;
+      }
       if (args.planFor) {
         await updateNight({ date: args.planFor, recipeSlug: r.slug, title: r.name, sourceUrl: null }, user.id);
         message += ` Put it on ${args.planFor}.`;
         changed.push("week");
       }
+    } else if (a.kind === "make_grocery_list") {
+      const r = await buildGroceryList(args.start, user.id);
+      message = `Made the grocery list in Mealie: ${r.count} items (${r.url}).`;
+      if (r.leftOff.length) message += ` Left off: ${r.leftOff.join(", ")}.`;
+      if (r.missing.length) message += ` No recipe to shop from for ${r.missing.join(", ")}.`;
+      changed.push("week");
     } else if (a.kind === "remember") {
       const saved = addMemory(user.id, String(args.fact), "chat");
       message = saved ? `Sal will remember: ${saved}` : "Sal already remembered that.";
@@ -421,7 +577,7 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
     d.prepare("update pending_actions set status = 'approved', result = ? where id = ?").run(message, a.id);
     return { ok: true, message, changed };
   } catch (e) {
-    const message = (e as Error).message;
+    const message = e instanceof OpenAI.APIError ? describeLlmError(e).message : (e as Error).message;
     d.prepare("update pending_actions set status = 'failed', result = ? where id = ?").run(message, a.id);
     return { ok: false, message, changed: [] };
   }

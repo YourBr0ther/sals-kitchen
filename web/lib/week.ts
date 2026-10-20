@@ -1,7 +1,7 @@
 import { busyEvenings } from "./calendar";
 import { getDb } from "./db";
 import { addDays, localDate, weekday, weekStart } from "./dates";
-import { createDinner, deleteMealPlan, getRecipe, searchRecipes } from "./mealie";
+import { createDinner, deleteMealPlan, getRecipe, searchRecipes, shoppingListUrl } from "./mealie";
 
 export interface Night {
   date: string;
@@ -16,6 +16,10 @@ export interface Night {
   sourceUrl: string | null;
   note: string | null;
   sentToMealie: boolean;
+  /** who last changed this night */
+  plannedBy: string | null;
+  /** how it went, once people say */
+  feedback: { name: string; verdict: string }[];
 }
 
 export interface Week {
@@ -23,6 +27,8 @@ export interface Week {
   end: string;
   nights: Night[];
   calendar: { configured: boolean; error?: string };
+  /** the Mealie grocery list made for this week, if any */
+  groceries: { url: string; count: number; updatedAt: string } | null;
 }
 
 type NightRow = {
@@ -35,6 +41,7 @@ type NightRow = {
   note: string | null;
   mealie_entry_id: string | null;
   sent_signature: string | null;
+  updated_by: number | null;
 };
 
 /** What a night looked like when it went to Mealie; if it changes, the ticket stops saying "in Mealie". */
@@ -44,7 +51,15 @@ export const signature = (r: Pick<NightRow, "title" | "recipe_id" | "source_url"
 export async function getWeek(start = weekStart(localDate())): Promise<Week> {
   start = weekStart(start);
   const end = addDays(start, 6);
-  const rows = getDb().prepare("select * from nights where date between ? and ?").all(start, end) as NightRow[];
+  const d = getDb();
+  const rows = d.prepare("select * from nights where date between ? and ?").all(start, end) as NightRow[];
+  const names = new Map((d.prepare("select id, name from users").all() as { id: number; name: string }[]).map((u) => [u.id, u.name]));
+  const fb = d
+    .prepare("select date, user_id, verdict from feedback where date between ? and ? and verdict != 'dismissed' order by user_id")
+    .all(start, end) as { date: string; user_id: number; verdict: string }[];
+  const list = d.prepare("select list_id, item_count, updated_at from grocery_lists where week_start = ?").get(start) as
+    | { list_id: string; item_count: number; updated_at: string }
+    | undefined;
   const byDate = new Map(rows.map((r) => [r.date, r]));
   const cal = await busyEvenings(start, 7);
   const busyByDate = new Map(cal.busy.map((b) => [b.date, b.reasons]));
@@ -67,9 +82,17 @@ export async function getWeek(start = weekStart(localDate())): Promise<Week> {
       sourceUrl: r?.source_url ?? null,
       note: r?.note ?? null,
       sentToMealie: Boolean(r?.mealie_entry_id && override !== false && (override ?? busy.length === 0) && r.sent_signature === signature(r)),
+      plannedBy: r?.updated_by ? (names.get(r.updated_by) ?? null) : null,
+      feedback: fb.filter((f) => f.date === date).map((f) => ({ name: names.get(f.user_id) ?? "Someone", verdict: f.verdict })),
     });
   }
-  return { start, end, nights, calendar: { configured: cal.configured, error: cal.error } };
+  return {
+    start,
+    end,
+    nights,
+    calendar: { configured: cal.configured, error: cal.error },
+    groceries: list ? { url: shoppingListUrl(list.list_id), count: list.item_count, updatedAt: list.updated_at } : null,
+  };
 }
 
 async function findByName(title: string) {

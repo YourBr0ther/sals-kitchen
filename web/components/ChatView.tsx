@@ -1,15 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
 import type { ActionView, VisibleMessage } from "@/lib/chat";
 import type { User } from "@/lib/db";
+import type { Settings } from "@/lib/settings";
 import Composer from "./Composer";
-import { MicIcon } from "./icons";
-import { jsonInit, timeLabel } from "./util";
+import { ClockIcon, XIcon } from "./icons";
+import { MessageList, SalText } from "./Messages";
+import { useSpeaker } from "./speech";
+import { jsonInit } from "./util";
 
 type Streaming = { text: string; status: string | null };
 type Problem = { message: string; retry: boolean };
+type Ask = { date: string; day: string; title: string };
+
+const ANSWERS = [
+  { verdict: "loved", label: "Loved it" },
+  { verdict: "fine", label: "It was fine" },
+  { verdict: "not_again", label: "Not again" },
+  { verdict: "skipped", label: "Didn't make it" },
+] as const;
 
 const hideRepliesLine = (t: string) => t.replace(/\n*\s*replies:[^\n]*$/i, "");
 
@@ -17,22 +27,7 @@ const hideRepliesLine = (t: string) => t.replace(/\n*\s*replies:[^\n]*$/i, "");
 const STALL_MS = 40_000;
 const POLL_MS = 3_000;
 
-function SalText({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      components={{
-        a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>
-        ),
-        img: () => null,
-      }}
-    >
-      {text}
-    </ReactMarkdown>
-  );
-}
-
-async function fetchHistory(): Promise<{ messages: VisibleMessage[]; busy: boolean }> {
+async function fetchHistory(): Promise<{ messages: VisibleMessage[]; busy: boolean; hasPast: boolean }> {
   const res = await fetch("/api/chat", { cache: "no-store" });
   if (res.status === 401) {
     window.location.assign("/login");
@@ -47,11 +42,17 @@ export default function ChatView({
   onChanged,
   onKeyboard,
   onBusy,
+  onOpenRecipe,
+  onShowPast,
+  readAloud,
 }: {
   me: User;
   onChanged: (changed: string[]) => void;
   onKeyboard: (open: boolean) => void;
   onBusy: (busy: boolean) => void;
+  onOpenRecipe: (slug: string) => void;
+  onShowPast: () => void;
+  readAloud: Settings["readAloud"];
 }) {
   const [messages, setMessages] = useState<VisibleMessage[] | null>(null);
   const [streaming, setStreaming] = useState<Streaming | null>(null);
@@ -60,6 +61,14 @@ export default function ChatView({
   const [problem, setProblem] = useState<Problem | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [deciding, setDeciding] = useState<number | null>(null);
+  const [hasPast, setHasPast] = useState(false);
+  const [ask, setAsk] = useState<Ask | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const { speaking, speak, stop: stopSpeaking } = useSpeaker();
+  const readAloudRef = useRef(readAloud);
+  useEffect(() => {
+    readAloudRef.current = readAloud;
+  }, [readAloud]);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const sendingRef = useRef(false);
@@ -83,6 +92,7 @@ export default function ChatView({
       if (sendingRef.current) return;
       setLoadFailed(false);
       setMessages(data.messages);
+      setHasPast(data.hasPast);
       setWaiting(data.busy);
       if (data.busy) {
         wasWaiting.current = true;
@@ -109,19 +119,35 @@ export default function ChatView({
     again.current = () => void resync();
   }, [resync]);
 
+  /** The dinner to ask about, if there's one this person hasn't answered. */
+  const loadAsk = useCallback(async () => {
+    try {
+      const res = await fetch("/api/feedback", { cache: "no-store" });
+      if (res.ok) setAsk(((await res.json()) as { ask: Ask | null }).ask);
+    } catch {
+      // the card is a nicety; no card is fine
+    }
+  }, []);
+
   useEffect(() => {
     // first load (the async work sets state once the history arrives)
-    const first = setTimeout(() => void resync(), 0);
+    const first = setTimeout(() => {
+      void resync();
+      void loadAsk();
+    }, 0);
     return () => {
       clearTimeout(first);
       clearTimeout(pollTimer.current);
     };
-  }, [resync]);
+  }, [resync, loadAsk]);
 
   // coming back to the app (or the tab) after a while: pick up anything that happened meanwhile
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible" && !sendingRef.current) void resync();
+      if (document.visibilityState === "visible" && !sendingRef.current) {
+        void resync();
+        void loadAsk();
+      }
     };
     const onShow = (e: PageTransitionEvent) => e.persisted && !sendingRef.current && void resync();
     document.addEventListener("visibilitychange", onVisible);
@@ -132,13 +158,13 @@ export default function ChatView({
       window.removeEventListener("pageshow", onShow);
       window.removeEventListener("online", onVisible);
     };
-  }, [resync]);
+  }, [resync, loadAsk]);
 
   // follow new text unless the person scrolled up to read something
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [messages, streaming, waiting, problem]);
+  }, [messages, streaming, waiting, problem, ask]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -150,6 +176,7 @@ export default function ChatView({
     async (text: string, attachments: string[] = [], voice = false, followUp = false): Promise<boolean> => {
       if (sendingRef.current) return false;
       sendingRef.current = true;
+      stopSpeaking();
       clearTimeout(pollTimer.current);
       setWaiting(false);
       setProblem(null);
@@ -228,6 +255,8 @@ export default function ChatView({
                 },
               ]);
               if (ev.changed?.length) onChanged(ev.changed);
+              const mode = readAloudRef.current;
+              if (mode === "always" || (mode === "voice" && voice)) void speak(ev.messageId, ev.text);
             }
           }
         }
@@ -250,8 +279,47 @@ export default function ChatView({
         sendingRef.current = false;
       }
     },
-    [onChanged, resync],
+    [onChanged, resync, speak, stopSpeaking],
   );
+
+  async function stopSal() {
+    try {
+      await fetch("/api/chat/stop", { method: "POST" });
+    } catch {
+      setProblem({ message: "Couldn't reach the kitchen to stop him. Check your connection.", retry: false });
+    }
+  }
+
+  async function answer(verdict: string) {
+    if (!ask || answering) return;
+    setAnswering(true);
+    try {
+      const res = await fetch("/api/feedback", jsonInit("POST", { date: ask.date, verdict }));
+      const r = (await res.json().catch(() => ({}))) as { event?: number | null; warning?: string | null; error?: string };
+      if (!res.ok) {
+        setProblem({ message: r.error ?? "Couldn't save that. Try again.", retry: false });
+        return;
+      }
+      setAsk(null);
+      onChanged(["week"]);
+      if (r.warning) setProblem({ message: r.warning, retry: false });
+      // Sal hears about it and answers; the event shows up in the chat with his reply
+      if (r.event) {
+        await resync();
+        void send("", [], false, true);
+      }
+      void loadAsk();
+    } catch {
+      setProblem({ message: "Couldn't reach the kitchen. Check your connection and tap again.", retry: false });
+    } finally {
+      setAnswering(false);
+    }
+  }
+
+  function toggleSpeak(m: VisibleMessage) {
+    if (speaking === m.id) stopSpeaking();
+    else void speak(m.id, m.content);
+  }
 
   async function decide(action: ActionView, approve: boolean) {
     setDeciding(action.id);
@@ -284,6 +352,9 @@ export default function ChatView({
   return (
     <>
       <div className="chat" ref={scroller} onScroll={onScroll} aria-live="polite">
+        {hasPast && (
+          <button className="past-link" onClick={onShowPast}><ClockIcon />Earlier conversations</button>
+        )}
         {loadFailed && !messages && (
           <div className="empty-chat">
             <p>Couldn&apos;t load the chat. Retrying…</p>
@@ -302,67 +373,19 @@ export default function ChatView({
           </div>
         )}
 
-        {messages?.map((m) =>
-          m.role === "event" ? (
-            <div key={m.id} className="event">{m.content}</div>
-          ) : m.role === "user" ? (
-            <div key={m.id} className="msg me">
-              <span className="meta">{me.name}, {timeLabel(m.createdAt)}</span>
-              <div className="bubble">
-                {m.voice && <div className="voice-tag"><MicIcon />Voice note</div>}
-                {!!m.attachments?.length && (
-                  <div className="photos">
-                    {m.attachments.map((id) => <img key={id} src={`/api/uploads/${id}`} alt="Photo you sent" />)}
-                  </div>
-                )}
-                {m.content}
-              </div>
-            </div>
-          ) : (
-            <div key={m.id} className="msg sal">
-              <span className="meta">Sal, {timeLabel(m.createdAt)}</span>
-              <div className="bubble">
-                <SalText text={m.content} />
-                {m.actions?.map((a) => (
-                  <div key={a.id} className="action-card">
-                    <p>{a.summary}?</p>
-                    {a.status === "pending" ? (
-                      <div className="row">
-                        <button className="yes" disabled={deciding === a.id || busy} onClick={() => decide(a, true)}>
-                          {deciding === a.id
-                            ? "Working…"
-                            : a.kind === "import_recipe_url"
-                              ? "Save it"
-                              : a.kind === "remember"
-                                ? "Remember it"
-                                : a.kind === "forget"
-                                  ? "Forget it"
-                                  : "Yes, update"}
-                        </button>
-                        <button className="no" disabled={deciding === a.id || busy} onClick={() => decide(a, false)}>No thanks</button>
-                      </div>
-                    ) : (
-                      <span className="done">
-                        {a.status === "approved"
-                          ? "Done."
-                          : a.status === "declined"
-                            ? "Skipped."
-                            : a.status === "running"
-                              ? "Working on it…"
-                              : `Didn't work: ${a.result ?? "unknown problem"}`}
-                      </span>
-                    )}
-                  </div>
-                ))}
-                {m.id === lastAssistant && !busy && !!m.chips?.length && (
-                  <div className="chips">
-                    {m.chips.map((c) => <button key={c} className="chip" onClick={() => void send(c)}>{c}</button>)}
-                  </div>
-                )}
-              </div>
-              {!!m.remembered?.length && <span className="remembered">Sal noted: {m.remembered.join("; ")}</span>}
-            </div>
-          ),
+        {messages && (
+          <MessageList
+            messages={messages}
+            me={me}
+            onDecide={decide}
+            onChip={(c) => void send(c)}
+            onSpeak={toggleSpeak}
+            onOpenRecipe={onOpenRecipe}
+            deciding={deciding}
+            busy={busy}
+            speaking={speaking}
+            chipsFor={lastAssistant}
+          />
         )}
 
         {(streaming || waiting) && (
@@ -370,12 +393,24 @@ export default function ChatView({
             <span className="meta">Sal</span>
             <div className="bubble">
               {streaming?.text ? (
-                <SalText text={hideRepliesLine(streaming.text)} />
+                <SalText text={hideRepliesLine(streaming.text)} onOpenRecipe={onOpenRecipe} />
               ) : (
                 !streaming?.status && <span className="typing-dots" aria-label="Sal is typing"><i /><i /><i /></span>
               )}
               {streaming?.status && <span className="status">{streaming.status}</span>}
               {waiting && !streaming && <span className="status">Still working on it</span>}
+            </div>
+          </div>
+        )}
+
+        {ask && !busy && (
+          <div className="ask-card" role="group" aria-label={`How was ${ask.day}'s dinner?`}>
+            <button className="ask-x" aria-label="Don't ask about this one" disabled={answering} onClick={() => void answer("dismissed")}><XIcon /></button>
+            <p>How was {ask.day}&apos;s <b>{ask.title}</b>?</p>
+            <div className="ask-row">
+              {ANSWERS.map((a) => (
+                <button key={a.verdict} disabled={answering} onClick={() => void answer(a.verdict)}>{a.label}</button>
+              ))}
             </div>
           </div>
         )}
@@ -389,7 +424,7 @@ export default function ChatView({
           </div>
         )}
       </div>
-      <Composer busy={busy} onSend={send} onKeyboard={onKeyboard} />
+      <Composer busy={busy} onSend={send} onStop={() => void stopSal()} onKeyboard={onKeyboard} />
     </>
   );
 }

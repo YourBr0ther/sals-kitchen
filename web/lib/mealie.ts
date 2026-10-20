@@ -151,7 +151,8 @@ export async function getRecipe(slug: string) {
  * ingredient section headings, servings next to "makes 1 loaf", and showing nutrition.
  */
 function afterImport(recipe: Recipe, saved: RawRecipe): Record<string, unknown> {
-  const patch: Record<string, unknown> = { orgURL: recipe.sourceUrl };
+  // recipes from a photo or a pasted message have no page to link back to
+  const patch: Record<string, unknown> = recipe.sourceUrl ? { orgURL: recipe.sourceUrl } : {};
   const ingredients = saved.recipeIngredient ?? [];
   // only when Mealie kept every line, so a heading can't land on the wrong one
   if (recipe.ingredientHeadings?.length && ingredients.length === recipe.recipeIngredient.length) {
@@ -189,12 +190,18 @@ export async function findBySourceUrl(raw: string): Promise<RecipeSummary | unde
   }
 }
 
+/** A recipe in the box with exactly this name, if any. */
+export async function findByName(name: string): Promise<RecipeSummary | undefined> {
+  const { recipes } = await searchRecipes(name, 10);
+  return recipes.find((r) => r.name.trim().toLowerCase() === name.trim().toLowerCase());
+}
+
 /**
  * Save a web recipe. This app fetches and reads the page itself (public addresses only),
  * so a link can't steer Mealie into the home network: Mealie only ever receives the recipe data.
  */
 export async function importRecipe(recipe: Recipe): Promise<{ recipe: RecipeSummary; existed: boolean }> {
-  const existing = await findBySourceUrl(recipe.sourceUrl);
+  const existing = recipe.sourceUrl ? await findBySourceUrl(recipe.sourceUrl) : await findByName(recipe.name);
   if (existing) return { recipe: existing, existed: true };
   const slug = await call<string>("/api/recipes/create/html-or-json", {
     method: "POST",
@@ -266,4 +273,142 @@ export async function mealieStatus(): Promise<{ connected: boolean; recipes?: nu
   } catch (e) {
     return { connected: false, error: (e as Error).message };
   }
+}
+
+// ---------- after dinner: last made, rating, and a note on the recipe's timeline ----------
+
+let selfId: string | null = null;
+async function mealieUserId(): Promise<string> {
+  selfId ??= (await call<{ id: string }>("/api/users/self")).id;
+  return selfId;
+}
+
+/** Set the recipe's "last made" date. */
+export async function markMade(slug: string, when: Date) {
+  await call(`/api/recipes/${encodeURIComponent(slug)}/last-made`, { method: "PATCH", body: JSON.stringify({ timestamp: when.toISOString() }) });
+}
+
+/** Rate a recipe 1 to 5 as the Mealie user behind the API token (the household's account). */
+export async function rateRecipe(slug: string, rating: number) {
+  const id = await mealieUserId();
+  await call(`/api/users/${id}/ratings/${encodeURIComponent(slug)}`, { method: "POST", body: JSON.stringify({ rating }) });
+}
+
+export async function addTimelineEvent(recipeId: string, subject: string, message: string, when: Date) {
+  await call("/api/recipes/timeline/events", {
+    method: "POST",
+    body: JSON.stringify({ recipeId, subject, eventType: "comment", eventMessage: message, timestamp: when.toISOString() }),
+  });
+}
+
+// ---------- tags and categories ----------
+
+type Organizer = { id: string; name: string; slug: string };
+
+async function listOrganizer(kind: "tags" | "categories"): Promise<Organizer[]> {
+  const data = await call<{ items: Organizer[] }>(`/api/organizers/${kind}?perPage=500&page=1&orderBy=name&orderDirection=asc`);
+  return data.items;
+}
+
+/** Names of the tags and categories already in the box, so new recipes reuse them. */
+export async function organizerNames(): Promise<{ tags: string[]; categories: string[] }> {
+  const [tags, categories] = await Promise.all([listOrganizer("tags"), listOrganizer("categories")]);
+  return { tags: tags.map((t) => t.name), categories: categories.map((c) => c.name) };
+}
+
+async function resolveOrganizers(kind: "tags" | "categories", names: string[]): Promise<Organizer[]> {
+  const existing = await listOrganizer(kind);
+  const out: Organizer[] = [];
+  for (const name of names) {
+    const hit = existing.find((o) => o.name.toLowerCase() === name.toLowerCase());
+    const o = hit ?? (await call<Organizer>(`/api/organizers/${kind}`, { method: "POST", body: JSON.stringify({ name }) }));
+    if (!hit) existing.push(o);
+    if (!out.some((x) => x.id === o.id)) out.push(o);
+  }
+  return out;
+}
+
+/** Replace a recipe's tags and categories, creating any that don't exist yet. */
+export async function setOrganizers(slug: string, tags: string[], categories: string[]) {
+  const [t, c] = await Promise.all([resolveOrganizers("tags", tags), resolveOrganizers("categories", categories)]);
+  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ tags: t, recipeCategory: c }) });
+}
+
+// ---------- shopping lists ----------
+
+export interface ShoppingItem {
+  id: string;
+  note: string;
+  checked: boolean;
+  labelId: string | null;
+}
+
+export const shoppingListUrl = (id: string) => `${config.mealie.publicUrl}/shopping-lists/${id}`;
+
+export async function createShoppingList(name: string): Promise<string> {
+  return (await call<{ id: string }>("/api/households/shopping/lists", { method: "POST", body: JSON.stringify({ name }) })).id;
+}
+
+/** The list's items, or null if the list is gone. */
+export async function getShoppingList(id: string): Promise<{ name: string; items: ShoppingItem[] } | null> {
+  try {
+    const l = await call<{ name: string; listItems?: (ShoppingItem & { display?: string })[] }>(`/api/households/shopping/lists/${encodeURIComponent(id)}`);
+    return { name: l.name, items: (l.listItems ?? []).map((i) => ({ id: i.id, note: i.note || i.display || "", checked: i.checked, labelId: i.labelId })) };
+  } catch (e) {
+    if (e instanceof MealieError && e.message.includes("couldn't find")) return null;
+    throw e;
+  }
+}
+
+const LABEL_COLORS: Record<string, string> = {
+  Produce: "#4CAF50",
+  "Meat and seafood": "#E57373",
+  "Dairy and eggs": "#FFD54F",
+  Bakery: "#BCAAA4",
+  Pantry: "#FFB74D",
+  "Spices and seasonings": "#A1887F",
+  Frozen: "#64B5F6",
+  Other: "#90A4AE",
+};
+export const AISLES = Object.keys(LABEL_COLORS);
+
+/** Label ids by name, creating Mealie labels for any aisle that doesn't have one yet. */
+async function aisleLabels(names: string[]): Promise<Map<string, string>> {
+  const data = await call<{ items: { id: string; name: string }[] }>("/api/groups/labels?perPage=200&page=1");
+  const byName = new Map(data.items.map((l) => [l.name.toLowerCase(), l.id]));
+  for (const name of new Set(names)) {
+    if (byName.has(name.toLowerCase())) continue;
+    const l = await call<{ id: string }>("/api/groups/labels", {
+      method: "POST",
+      body: JSON.stringify({ name, color: LABEL_COLORS[name] ?? "#90A4AE" }),
+    });
+    byName.set(name.toLowerCase(), l.id);
+  }
+  return byName;
+}
+
+export async function addShoppingItems(listId: string, items: { text: string; aisle: string }[]): Promise<string[]> {
+  if (!items.length) return [];
+  const labels = await aisleLabels(items.map((i) => i.aisle));
+  const res = await call<{ createdItems: { id: string }[]; updatedItems: { id: string }[] }>("/api/households/shopping/items/create-bulk", {
+    method: "POST",
+    body: JSON.stringify(
+      items.map((i, position) => ({
+        shoppingListId: listId,
+        note: i.text,
+        quantity: 0,
+        checked: false,
+        position,
+        labelId: labels.get(i.aisle.toLowerCase()) ?? null,
+      })),
+    ),
+  });
+  return [...res.createdItems, ...res.updatedItems].map((i) => i.id);
+}
+
+export async function deleteShoppingItems(ids: string[]) {
+  if (!ids.length) return;
+  const q = new URLSearchParams();
+  for (const id of ids) q.append("ids", id);
+  await call(`/api/households/shopping/items?${q}`, { method: "DELETE" });
 }

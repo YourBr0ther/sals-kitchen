@@ -5,9 +5,9 @@ let client: OpenAI | undefined;
 const llm = () => (client ??= new OpenAI({ baseURL: config.llm.baseURL, apiKey: config.llm.apiKey }));
 
 const PROMPT = `You describe photos for a home chef assistant. The family sent this photo while planning meals.
-Describe what matters for cooking in a few short lines:
-- If it's a fridge, pantry, or groceries: list the foods and ingredients you can identify, with rough amounts.
-- If it's a cookbook page, recipe card, or screen: transcribe the recipe name, ingredients, and steps.
+Describe what matters for cooking:
+- If it's a fridge, pantry, or groceries: list the foods and ingredients you can identify, with rough amounts, in a few short lines.
+- If it's a cookbook page, recipe card, or screen showing a recipe: transcribe it completely and word for word: the name, servings, times, every ingredient with its amount, every step, and any notes. Keep section headings ("For the sauce"). Mark words you can't read as [unclear]. This transcription is used to save the recipe, so don't summarize.
 - If it's a plated dish: name the dish and its main components.
 - Otherwise: say briefly what it shows.
 Plain text only. Don't guess at things you can't see.`;

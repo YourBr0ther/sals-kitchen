@@ -1,5 +1,5 @@
 import { currentUser, unauthorized } from "@/lib/auth";
-import { addMessage, visibleMessages } from "@/lib/chat";
+import { addMessage, pastConversations, visibleMessages } from "@/lib/chat";
 import { getDb } from "@/lib/db";
 import { guarded, readJson } from "@/lib/http";
 import { isBusy, releaseTurn, runTurn, tryStartTurn } from "@/lib/sal/agent";
@@ -8,7 +8,7 @@ import { isBusy, releaseTurn, runTurn, tryStartTurn } from "@/lib/sal/agent";
 export const GET = guarded("chat GET", async function GET() {
   const user = await currentUser();
   if (!user) return unauthorized();
-  return Response.json({ messages: visibleMessages(user.id), busy: isBusy(user.id) });
+  return Response.json({ messages: visibleMessages(user.id), busy: isBusy(user.id), hasPast: pastConversations(user.id, 1).length > 0 });
 });
 
 // a turn that runs longer than this is cut off, so a stalled service can't lock someone out
@@ -33,7 +33,8 @@ export const POST = guarded("chat POST", async function POST(req: Request) {
       .get(user.id, ...attachments) as { n: number };
     if (owned.n !== attachments.length) return Response.json({ error: "That photo didn't upload. Attach it again." }, { status: 400 });
   }
-  if (!tryStartTurn(user.id)) return Response.json({ error: "Sal's still answering your last message.", busy: true }, { status: 409 });
+  const stopped = tryStartTurn(user.id);
+  if (!stopped) return Response.json({ error: "Sal's still answering your last message.", busy: true }, { status: 409 });
 
   let userMessageId: number | null = null;
   try {
@@ -44,7 +45,7 @@ export const POST = guarded("chat POST", async function POST(req: Request) {
   }
 
   const encoder = new TextEncoder();
-  const deadline = AbortSignal.timeout(TURN_DEADLINE_MS);
+  const signal = AbortSignal.any([AbortSignal.timeout(TURN_DEADLINE_MS), stopped]);
   const stream = new ReadableStream({
     async start(controller) {
       let open = true;
@@ -60,7 +61,7 @@ export const POST = guarded("chat POST", async function POST(req: Request) {
       const keepalive = setInterval(() => write(": keepalive\n\n"), KEEPALIVE_MS);
       send({ type: "accepted", userMessageId });
       try {
-        for await (const ev of runTurn(user, deadline)) send(ev);
+        for await (const ev of runTurn(user, signal, stopped)) send(ev);
       } catch (e) {
         console.error(`[chat] stream for user ${user.id} failed:`, e);
         send({ type: "error", message: "Something went wrong on Sal's end. Try again.", retryable: true });

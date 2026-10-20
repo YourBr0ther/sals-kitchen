@@ -28,6 +28,16 @@ type FailRow = { count: number; locks: number; locked_until: number };
 export type LoginResult = { ok: true; token: string; maxAge: number } | { ok: false; error: string };
 
 export function login(userId: number, pin: string): LoginResult {
+  const checked = checkPin(userId, pin);
+  if (!checked.ok) return checked;
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
+  getDb().prepare("insert into sessions (token, user_id, expires_at) values (?, ?, ?)").run(token, userId, expires);
+  return { ok: true, token, maxAge: SESSION_DAYS * 86_400 };
+}
+
+/** Check a PIN, counting misses toward the lockout. Used for logging in and for changing a PIN. */
+export function checkPin(userId: number, pin: string): { ok: true } | { ok: false; error: string } {
   const d = getDb();
   const f = d.prepare("select count, locks, locked_until from login_failures where user_id = ?").get(userId) as FailRow | undefined;
   if (f && f.locked_until > Date.now()) {
@@ -53,10 +63,7 @@ export function login(userId: number, pin: string): LoginResult {
     return { ok: false, error: until ? "Too many wrong PINs. Try again later." : "Wrong PIN." };
   }
   d.prepare("delete from login_failures where user_id = ?").run(userId);
-  const token = crypto.randomBytes(32).toString("base64url");
-  const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000).toISOString();
-  getDb().prepare("insert into sessions (token, user_id, expires_at) values (?, ?, ?)").run(token, userId, expires);
-  return { ok: true, token, maxAge: SESSION_DAYS * 86_400 };
+  return { ok: true };
 }
 
 export function logout(token: string) {

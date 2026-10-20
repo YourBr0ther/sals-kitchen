@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { LinkIcon, MicIcon, PhotoIcon, SendIcon, StopIcon, XIcon } from "./icons";
+import { unlockAudio } from "./speech";
 import { api, shrinkImage } from "./util";
 
 type Attachment = { id: string; preview: string };
@@ -19,9 +20,12 @@ function pickMime() {
 export default function Composer({
   busy,
   onSend,
+  onStop,
   onKeyboard,
 }: {
   busy: boolean;
+  /** cut Sal off mid-reply */
+  onStop: () => void;
   /** resolves false if the message never reached Sal */
   onSend: (text: string, attachments: string[], voice?: boolean) => Promise<boolean>;
   onKeyboard: (open: boolean) => void;
@@ -116,6 +120,8 @@ export default function Composer({
 
   async function startRecording() {
     setError("");
+    // this tap is what lets Sal's spoken reply play later on an iPhone
+    unlockAudio();
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("This browser can't record audio here. Voice notes need the app on https.");
       return;
@@ -231,7 +237,9 @@ export default function Composer({
                 }
               }}
             />
-            {hasContent ? (
+            {busy ? (
+              <button type="button" className="tool stop" aria-label="Stop Sal" onClick={onStop}><StopIcon /></button>
+            ) : hasContent ? (
               <button type="submit" className="tool send" aria-label="Send" disabled={busy || uploading}><SendIcon /></button>
             ) : (
               <button type="button" className="tool mic" aria-label="Record a voice note" disabled={busy || transcribing} onClick={startRecording}>

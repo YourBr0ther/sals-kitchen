@@ -9,6 +9,8 @@ import { jsonInit } from "./util";
 const fmt = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
+const VERDICT: Record<string, string> = { loved: "loved it", fine: "fine", not_again: "not again", skipped: "skipped" };
+
 const OnOffIcon = ({ on }: { on: boolean }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" aria-hidden="true">
     {on ? <path d="M5 12l4 4 10-10" /> : <><circle cx="12" cy="12" r="8" /><path d="M6.5 17.5l11-11" /></>}
@@ -24,6 +26,7 @@ export default function WeekTicket({
   onPrev,
   onNext,
   onThisWeek,
+  onOpenRecipe,
 }: {
   me: User;
   week: Week | null;
@@ -33,8 +36,10 @@ export default function WeekTicket({
   onPrev: () => void;
   onNext: () => void;
   onThisWeek: () => void;
+  onOpenRecipe: (slug: string) => void;
 }) {
   const [sending, setSending] = useState(false);
+  const [shopping, setShopping] = useState(false);
   const [changing, setChanging] = useState<string | null>(null);
   const [note, setNote] = useState("");
 
@@ -96,6 +101,21 @@ export default function WeekTicket({
     setSending(false);
   }
 
+  async function makeList() {
+    if (!week || shopping) return;
+    setShopping(true);
+    setNote("");
+    const r = await request("/api/week/groceries", jsonInit("POST", { start: week.start }));
+    if (r.ok) {
+      const count = Number(r.data.count ?? 0);
+      const missing = (r.data.missing as string[]) ?? [];
+      setNote(`Grocery list is in Mealie: ${count} item${count === 1 ? "" : "s"}.` + (missing.length ? ` No recipe to shop from for ${missing.join(", ")}.` : ""));
+    } else {
+      setNote(String(r.data.error ?? "Couldn't make the list. Try again."));
+    }
+    setShopping(false);
+  }
+
   const cooking = week.nights.filter((n) => n.cooking).length;
   const planned = week.nights.filter((n) => n.cooking && n.title).length;
   const allSent = planned > 0 && week.nights.every((n) => !n.cooking || !n.title || n.sentToMealie);
@@ -119,7 +139,13 @@ export default function WeekTicket({
             <span className="what">
               {n.title ? (
                 <span>
-                  {n.sourceUrl && !n.recipeSlug ? <a href={n.sourceUrl} target="_blank" rel="noreferrer">{n.title}</a> : n.title}
+                  {n.recipeSlug ? (
+                    <button className="dish" onClick={() => onOpenRecipe(n.recipeSlug!)}>{n.title}</button>
+                  ) : n.sourceUrl ? (
+                    <a href={n.sourceUrl} target="_blank" rel="noreferrer">{n.title}</a>
+                  ) : (
+                    n.title
+                  )}
                 </span>
               ) : n.cooking ? (
                 <span className="open">Open</span>
@@ -130,7 +156,11 @@ export default function WeekTicket({
               {n.title && (
                 <small>
                   {n.sentToMealie ? <span className="tag sent">in Mealie</span> : n.recipeSlug ? <span className="tag box">in box</span> : <span className="tag new">new</span>}
+                  {n.plannedBy && <span className="by"> {n.plannedBy}</span>}
                 </small>
+              )}
+              {n.feedback.length > 0 && (
+                <small className="verdicts">{n.feedback.map((f) => `${f.name}: ${VERDICT[f.verdict] ?? f.verdict}`).join(", ")}</small>
               )}
             </span>
             <span className="acts">
@@ -152,9 +182,19 @@ export default function WeekTicket({
           {!week.calendar.configured && <span className="cal-note">No calendar connected yet. Tap a night to mark it off.</span>}
           {week.calendar.error && <span className="cal-note">Calendar trouble: {week.calendar.error}</span>}
           {me.role === "adult" && (
-            <button className="push" onClick={send} disabled={sending || planned === 0}>
-              {sending ? "Sending…" : allSent ? "Sent. Send again" : "Send to Mealie"}
-            </button>
+            <>
+              <button className="push" onClick={send} disabled={sending || planned === 0}>
+                {sending ? "Sending…" : allSent ? "Sent. Send again" : "Send to Mealie"}
+              </button>
+              <button className="push alt" onClick={makeList} disabled={shopping || planned === 0}>
+                {shopping ? "Writing the list…" : week.groceries ? "Remake the grocery list" : "Make the grocery list"}
+              </button>
+            </>
+          )}
+          {week.groceries && (
+            <a className="list-link" href={week.groceries.url} target="_blank" rel="noreferrer">
+              Grocery list in Mealie, {week.groceries.count} item{week.groceries.count === 1 ? "" : "s"}
+            </a>
           )}
           {note && <p className="msgline" role="status">{note}</p>}
         </footer>

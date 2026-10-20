@@ -32,3 +32,15 @@ export const FreshIcon = () => (
 export const SwapIcon = () => (
   <svg {...base}><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7" /></svg>
 );
+export const SpeakerIcon = () => (
+  <svg {...base}><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" /></svg>
+);
+export const ClockIcon = () => (
+  <svg {...base}><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg>
+);
+export const GearIcon = () => (
+  <svg {...base}><circle cx="12" cy="12" r="3" /><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" /></svg>
+);
+export const BasketIcon = () => (
+  <svg {...base}><path d="M4 10h16l-1.6 9H5.6z" /><path d="M8 10l3-6M16 10l-3-6M9 14v2M12 14v2M15 14v2" /></svg>
+);

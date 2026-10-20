@@ -163,21 +163,23 @@ export function getActions(ids: number[], userId: number): ActionView[] {
     .all(userId, ...ids) as ActionView[];
 }
 
-/** What the chat screen shows: everything except tool plumbing. */
-export function visibleMessages(userId: number, limit = 80): VisibleMessage[] {
-  const rows = getDb()
+/**
+ * What the chat screen shows: everything except tool plumbing. By default that's the
+ * current conversation (since the last "new conversation"); pass a range for an old one.
+ */
+export function visibleMessages(userId: number, range?: { after: number; through: number }, limit = 80): VisibleMessage[] {
+  const d = getDb();
+  const after = range?.after ?? lastResetId(userId);
+  const through = range?.through ?? Number.MAX_SAFE_INTEGER;
+  const rows = d
     .prepare(
-      `select * from messages where user_id = ? and role in ('user', 'assistant', 'event', 'reset')
+      `select * from messages where user_id = ? and id > ? and id <= ? and role in ('user', 'assistant', 'event')
        order by id desc limit ?`,
     )
-    .all(userId, limit) as Row[];
+    .all(userId, after, through, limit) as Row[];
   const out: VisibleMessage[] = [];
   for (const r of rows.reverse()) {
     const p = JSON.parse(r.payload);
-    if (r.role === "reset") {
-      out.push({ id: r.id, role: "event", content: "New conversation", createdAt: r.created_at });
-      continue;
-    }
     // tool-call steps are folded into the turn's final message via `display`
     if (r.role === "assistant" && (p.tool_calls || !(p.display ?? r.content).trim())) continue;
     out.push({
@@ -193,6 +195,56 @@ export function visibleMessages(userId: number, limit = 80): VisibleMessage[] {
     });
   }
   return out;
+}
+
+const lastResetId = (userId: number) =>
+  (getDb().prepare("select coalesce(max(id), 0) as id from messages where user_id = ? and role = 'reset'").get(userId) as { id: number }).id;
+
+export interface ConversationSummary {
+  /** messages after this id and up to `through` belong to it */
+  after: number;
+  through: number;
+  startedAt: string;
+  endedAt: string;
+  preview: string;
+  messages: number;
+}
+
+/** Earlier conversations, newest first. Each one ends where someone started a new one. */
+export function pastConversations(userId: number, limit = 60): ConversationSummary[] {
+  const rows = getDb()
+    .prepare(
+      `select id, role, content, created_at from messages where user_id = ? and role in ('user', 'reset')
+       or (user_id = ? and role = 'assistant' and payload not like '%"tool_calls"%') order by id`,
+    )
+    .all(userId, userId) as { id: number; role: Role; content: string; created_at: string }[];
+  const out: ConversationSummary[] = [];
+  let after = 0;
+  let first: (typeof rows)[number] | undefined;
+  let last: (typeof rows)[number] | undefined;
+  let count = 0;
+  for (const r of rows) {
+    if (r.role === "reset") {
+      if (count) {
+        out.push({
+          after,
+          through: r.id,
+          startedAt: first!.created_at,
+          endedAt: last!.created_at,
+          preview: rows.find((x) => x.id > after && x.role === "user" && x.content.trim())?.content.slice(0, 120) ?? "Photos and voice notes",
+          messages: count,
+        });
+      }
+      after = r.id;
+      first = last = undefined;
+      count = 0;
+      continue;
+    }
+    first ??= r;
+    last = r;
+    count++;
+  }
+  return out.reverse().slice(0, limit);
 }
 
 /** Sal ends some replies with a "Replies: a | b | c" line; split it off into tap-to-send chips. */

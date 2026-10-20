@@ -19,16 +19,25 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#1E4D3A",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#1E4D3A" },
+    { media: "(prefers-color-scheme: dark)", color: "#10241b" },
+  ],
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
   interactiveWidget: "resizes-content",
 };
 
+const THEME_SCRIPT = `try{var t=localStorage.getItem("sal-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${shrikhand.variable} ${instrument.variable} ${courier.variable}`}>
+    // the saved theme is applied before first paint, so a dark-mode phone never flashes white
+    <html lang="en" className={`${shrikhand.variable} ${instrument.variable} ${courier.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
       <body>
         {children}
         <ServiceWorker />

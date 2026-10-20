@@ -249,6 +249,7 @@ export const WEB_TOOLS = new Set([
   "recent_dinners",
   "get_week",
   "plan_nights",
+  "log_dinner",
 ]);
 
 /**

@@ -16,6 +16,13 @@ export const config = {
     // root for NanoGPT's non-chat endpoints (web search, speech-to-text)
     url: env("NANOGPT_API_URL", "https://nano-gpt.com"),
     sttModel: env("STT_MODEL", "Whisper-Large-V3"),
+    // Sal's speaking voice; the instructions steer models that take them
+    ttsModel: env("TTS_MODEL", "gpt-4o-mini-tts"),
+    ttsVoice: env("TTS_VOICE", "onyx"),
+    ttsInstructions: env(
+      "TTS_INSTRUCTIONS",
+      "A warm, slightly gravelly retired restaurant chef in his sixties. Relaxed pace, dry humor, a smile in the voice. Not theatrical.",
+    ),
   },
   mealie: {
     url: env("MEALIE_URL").replace(/\/$/, ""),

@@ -289,7 +289,12 @@ async function fromPageText(excerpt: string, title: string, sourceUrl: string, p
     temperature: 0,
     messages: [
       { role: "system", content: EXTRACT_PROMPT },
-      { role: "user", content: `Page title: ${title}\nURL: ${sourceUrl}\n\n${excerpt}` },
+      {
+        role: "user",
+        content: sourceUrl
+          ? `Page title: ${title}\nURL: ${sourceUrl}\n\n${excerpt}`
+          : `A recipe someone typed, pasted, or photographed${title ? ` (probably called "${title}")` : ""}:\n\n${excerpt}`,
+      },
     ],
   });
   const raw = res.choices[0]?.message?.content ?? "";
@@ -391,6 +396,14 @@ export async function extractRecipe(url: string): Promise<Recipe> {
   cache.set(url, { at: Date.now(), result });
   if (result instanceof NoRecipeError) throw result;
   return result;
+}
+
+/**
+ * A recipe from chat: pasted text, or the transcription of a photographed card or cookbook page.
+ * Throws NoRecipeError when the text doesn't hold a whole recipe.
+ */
+export function recipeFromText(text: string, title = ""): Promise<Recipe> {
+  return fromPageText(text.slice(0, 12000), title, "", null);
 }
 
 /** The recipe as schema.org JSON for Mealie, with no URLs Mealie would go and fetch. */

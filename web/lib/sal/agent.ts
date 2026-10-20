@@ -1,7 +1,9 @@
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import { addMessage, addToolExchange, getActions, imageDataUrl, modelHistory, photosToDescribe, splitChips, updatePayload, type ActionView } from "../chat";
 import { describePhoto } from "../vision";
 import { config } from "../config";
+import { recentFeedbackLines } from "../feedback";
+import { describeLlmError, llm } from "../llm";
 import type { User } from "../db";
 import { maybeSummarize, webInConversation } from "../memory";
 import { getWeek } from "../week";
@@ -16,33 +18,26 @@ export type SalEvent =
 
 const MAX_STEPS = 8;
 
-// one turn at a time per person, so a double-tap doesn't run Sal twice
-const turns = new Set<number>();
+// one turn at a time per person, so a double-tap doesn't run Sal twice;
+// each turn's controller lets the person stop it from any of their devices
+const turns = new Map<number, AbortController>();
 export const isBusy = (userId: number) => turns.has(userId);
-export function tryStartTurn(userId: number): boolean {
-  if (turns.has(userId)) return false;
-  turns.add(userId);
-  return true;
+/** Claim the person's turn. Returns the signal their Stop button aborts, or null if a turn is already running. */
+export function tryStartTurn(userId: number): AbortSignal | null {
+  if (turns.has(userId)) return null;
+  const stop = new AbortController();
+  turns.set(userId, stop);
+  return stop.signal;
 }
 export const releaseTurn = (userId: number) => void turns.delete(userId);
-
-let client: OpenAI | undefined;
-// retries cover connection errors, 408/409/429 and 5xx before any text has streamed
-const llm = () => (client ??= new OpenAI({ baseURL: config.llm.baseURL, apiKey: config.llm.apiKey, timeout: 120_000, maxRetries: 2 }));
-
-/** What to tell the family when the AI service fails, and whether trying again could help. */
-export function describeLlmError(e: unknown): { message: string; retryable: boolean } {
-  if (e instanceof OpenAI.APIConnectionTimeoutError) return { message: "Sal's AI service took too long to answer. Try again.", retryable: true };
-  if (e instanceof OpenAI.APIConnectionError) return { message: "Couldn't reach Sal's AI service. Check the connection and try again.", retryable: true };
-  if (e instanceof OpenAI.APIError) {
-    if (e.status === 401 || e.status === 403) return { message: "Sal's AI service turned down the API key. The key needs replacing.", retryable: false };
-    if (e.status === 402) return { message: "The AI account is out of credit or over its limit.", retryable: false };
-    if (e.status === 429) return { message: "Sal's AI service is busy right now. Give it a minute and try again.", retryable: true };
-    if (e.status && e.status >= 500) return { message: "Sal's AI service is having trouble. Try again in a moment.", retryable: true };
-    return { message: `Sal's AI service rejected the request (${e.status ?? "error"}).`, retryable: false };
-  }
-  return { message: "Something went wrong on Sal's end. Try again.", retryable: true };
+export function stopTurn(userId: number): boolean {
+  const t = turns.get(userId);
+  if (!t || t.signal.aborted) return false;
+  t.abort(new Error("stopped"));
+  return true;
 }
+
+export { describeLlmError };
 
 type ToolCall = OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall;
 
@@ -50,10 +45,12 @@ type ToolCall = OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall;
  * One turn: the user's message is already saved. Loops model -> tools -> model
  * until Sal answers in plain text, saving every step so the next turn has the context.
  */
-export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator<SalEvent> {
+export async function* runTurn(user: User, signal?: AbortSignal, stopped?: AbortSignal): AsyncGenerator<SalEvent> {
   const ctx: ToolContext = { user, actions: [], changed: new Set(), remembered: [], webInView: webInConversation(user.id) };
   // text Sal wrote before tool calls; the chat shows it together with the final answer
   const said: string[] = [];
+  // what's streamed so far in the current step, kept if the person taps Stop
+  let partial = "";
   try {
     const pending = photosToDescribe(user.id);
     if (pending) {
@@ -72,12 +69,13 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
       }
       updatePayload(pending.id, { ...pending.payload, photoNotes: notes });
     }
+    const feedback = await recentFeedbackLines().catch(() => []);
     for (let step = 0; step < MAX_STEPS; step++) {
       const week = await getWeek();
       const stream = await llm().chat.completions.create(
         {
           model: config.llm.model,
-          messages: [{ role: "system", content: systemPrompt(user, week) }, ...modelHistory(user.id)],
+          messages: [{ role: "system", content: systemPrompt(user, week, feedback) }, ...modelHistory(user.id)],
           tools: TOOLS,
           stream: true,
           temperature: 0.8,
@@ -86,6 +84,7 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
       );
 
       let text = "";
+      partial = "";
       const calls: { id: string; name: string; args: string }[] = [];
       let shown = 0;
       for await (const chunk of stream) {
@@ -99,6 +98,7 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
           if (safe > shown) {
             yield { type: "text", delta: text.slice(shown, safe) };
             shown = safe;
+            partial = text.slice(0, safe);
           }
         }
         for (const tc of delta.tool_calls ?? []) {
@@ -138,6 +138,7 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
       }
 
       if (text.trim()) said.push(text.trim());
+      partial = "";
       if (text.trim()) yield { type: "text", delta: "\n\n" };
       const results: { id: string; name: string; content: string }[] = [];
       for (const call of toolCalls) {
@@ -164,6 +165,15 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
     const messageId = addMessage(user.id, "assistant", text, { actions: ctx.actions, remembered: ctx.remembered });
     yield { type: "done", messageId, text, chips: [], actions: getActions(ctx.actions, user.id), changed: [...ctx.changed], remembered: ctx.remembered };
   } catch (e) {
+    if (stopped?.aborted) {
+      // keep whatever he'd said, so the conversation still reads right
+      // (text from before tool calls is already in the saved tool steps; display repeats it for the screen)
+      const last = partial.trim() ? `${partial.trim()} …` : "(stopped before finishing)";
+      const shown = [...said, last].join("\n\n");
+      const messageId = addMessage(user.id, "assistant", last, { actions: ctx.actions, display: shown, remembered: ctx.remembered, stopped: true });
+      yield { type: "done", messageId, text: shown, chips: [], actions: getActions(ctx.actions, user.id), changed: [...ctx.changed], remembered: ctx.remembered };
+      return;
+    }
     console.error(`[chat] turn for user ${user.id} failed:`, e);
     if (signal?.aborted) {
       yield { type: "error", message: "That took Sal too long, so he stopped. Try again, maybe with a simpler ask.", retryable: true };
