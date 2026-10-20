@@ -16,6 +16,22 @@ The goal is simple. We want to cook at home more, and planning was always the pa
 
 You can open the clickable prototype at [`prototype/index.html`](prototype/index.html). It has no backend. Sal's replies are canned, but switching users, editing your own taste profile, and pinning a recipe to Thursday all work.
 
+## Built for phones first
+
+Most planning happens on a phone: on the couch, or standing in the grocery store. The phone layout is the main one, and the desktop layout is the stretch.
+
+<p align="center">
+  <img src="docs/mobile.png" alt="Phone screens: chat with Sal, the week ticket, taste profiles, and the who's-cooking switcher" width="100%">
+</p>
+
+- A tab bar along the bottom (Chat, This week, Profiles), within thumb reach
+- Your avatar sits top right. Tap it to switch who's talking
+- The mic is the big button. It turns into send once you start typing
+- The message box uses 16px text, so iOS doesn't zoom in when you tap it
+- Every tap target is at least 44px
+- The layout handles notches and home-bar insets, and the tab bar hides while the keyboard is up
+- Add it to your home screen and it opens full screen, with its own icon, like an app
+
 ## What Sal does
 
 **Plans the week.** Sal reads a shared calendar and treats busy evenings (practice, date night, travel) as nights off. A typical week ends up with four or five cooking nights, and he plans those.
@@ -95,9 +111,9 @@ CALENDAR_ID=
 ## Repo layout
 
 ```
-assets/       icon.svg, banner.png, banner.html (banner source)
-docs/         architecture, chef persona, screenshot
-prototype/    clickable static UI mock
+assets/       icon.svg, home-screen PNG icons, banner.png, banner.html (banner source)
+docs/         architecture, chef persona, screenshots
+prototype/    clickable static UI mock and web app manifest
 ```
 
 ## License

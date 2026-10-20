@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#1E4D3A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sal">
 <title>Sal's Kitchen</title>
 <link rel="icon" href="../assets/icon.svg">
+<link rel="apple-touch-icon" href="../assets/icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Instrument+Sans:wght@400;500;600;700&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
@@ -224,26 +230,96 @@
   .hidden { display: none !important; }
 
   /* mobile */
-  .tabs { display: none; }
+  .tabs, .me-btn, .sheet, .scrim, .short { display: none; }
+  .composer .send { display: grid; }
   @media (max-width: 1080px) {
     .app { grid-template-columns: minmax(0, 1fr) 320px; }
     .side { display: none; }
+    .me-btn { display: grid; }
   }
   @media (max-width: 760px) {
-    .app { grid-template-columns: minmax(0,1fr); padding: 0; gap: 0; height: 100dvh; }
-    .pane { border-radius: 0; }
-    .rail { display: none; padding: 16px; background: var(--tile); }
+    body { background: var(--paper); }
+    .app {
+      grid-template-columns: minmax(0,1fr);
+      grid-template-rows: minmax(0, 1fr) auto;
+      padding: 0; gap: 0; height: 100dvh;
+    }
+    .main, .rail { grid-row: 1; grid-column: 1; }
+    .pane { border-radius: 0; box-shadow: none; }
+    .rail { display: none; padding: 16px 12px 24px; background: var(--tile); }
     .app.show-week .main { display: none; }
     .app.show-week .rail { display: flex; }
+
+    .pane-head {
+      padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+      gap: 12px; background: var(--forest); color: #fff; border-bottom: 0;
+    }
+    .pane-head img { width: 36px; height: 36px; }
+    .pane-head p { color: #A9C9B9; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pane-head > div { min-width: 0; flex: 1; }
+    .pane-head .long { display: none; }
+    .pane-head .short { display: inline; }
+    .rail { padding-top: calc(16px + env(safe-area-inset-top)); }
+
+    .chat, .profile { padding: 16px; overscroll-behavior: contain; }
+    .msg { max-width: 88%; }
+    .msg .bubble { padding: 11px 14px; }
+    /* chips scroll sideways instead of stacking three rows deep */
+    .chips { flex-wrap: nowrap; overflow-x: auto; margin-right: -14px; padding-right: 14px; scrollbar-width: none; }
+    .chips::-webkit-scrollbar { display: none; }
+    .chip { flex: none; min-height: 40px; padding: 8px 14px; }
+
+    .composer { padding: 8px 10px 10px; }
+    .composer form { border-radius: 24px; padding: 4px; gap: 2px; }
+    /* 16px stops iOS Safari from zooming in when the field gets focus */
+    .composer textarea { font-size: 16px; padding: 10px 4px; min-height: 44px; }
+    .tool { width: 44px; height: 44px; border-radius: 50%; }
+    .tool.mic { background: var(--forest); color: #fff; }
+    .composer.typing .mic { display: none; }
+    .composer:not(.typing) .send { display: none; }
+    .hint { display: none; }
+
     .tabs {
       display: grid; grid-template-columns: repeat(3, 1fr); background: var(--forest);
-      position: sticky; bottom: 0;
+      padding-bottom: env(safe-area-inset-bottom);
     }
-    .tabs button { background: transparent; border: 0; color: #CFE2D8; padding: 12px 0 14px; font-weight: 600; font-size: 13px; }
+    .tabs button {
+      background: transparent; border: 0; color: #CFE2D8; min-height: 56px;
+      display: grid; justify-items: center; align-content: center; gap: 3px;
+      font-weight: 600; font-size: 12px;
+    }
+    .tabs svg { width: 22px; height: 22px; }
     .tabs button[aria-current="page"] { color: var(--mustard); }
-    .chat, .profile { padding: 16px; }
-    .pane-head { padding: 14px 16px; }
+    .app.keyboard .tabs { display: none; }
+
+    .ticket { margin: -8px 6px 0; }
+    .profile h2 { font-size: 24px; }
+    .pgrid { grid-template-columns: 1fr; }
+    .pill { min-height: 36px; }
+    .pill button { width: 32px; height: 32px; }
+    .addpill { min-height: 36px; }
+
+    .scrim.open { display: block; position: fixed; inset: 0; background: rgba(14,31,24,.45); z-index: 10; }
+    .sheet.open {
+      display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 11;
+      background: #fff; border-radius: 22px 22px 0 0;
+      padding: 10px 16px calc(16px + env(safe-area-inset-bottom));
+      animation: up 220ms ease-out both;
+    }
+    @keyframes up { from { transform: translateY(100%); } }
   }
+  @media (max-width: 760px) and (prefers-reduced-motion: reduce) { .sheet.open { animation: none; } }
+
+  .me-btn {
+    margin-left: auto; width: 44px; height: 44px; border: 0; border-radius: 50%;
+    background: transparent; place-items: center; padding: 0; flex: none;
+  }
+  .me-btn .avatar { width: 34px; height: 34px; box-shadow: 0 0 0 2px #fff; }
+  .sheet .grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 14px; }
+  .sheet h2 { font-size: 15px; margin: 0 0 8px 4px; }
+  .sheet .who button { color: var(--forest-ink); min-height: 56px; }
+  .sheet .who button[aria-pressed="true"] { background: var(--tile); }
+  .sheet .who small { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -275,8 +351,11 @@
       <img src="../assets/icon.svg" alt="">
       <div>
         <h1>Sal</h1>
-        <p>Your personal chef. 40 years on the line, still can't whisper.</p>
+        <p><span class="long">Your personal chef. 40 years on the line, still can't whisper.</span><span class="short">Online. Probably eating.</span></p>
       </div>
+      <button class="me-btn" id="me-btn" aria-label="Switch person, now Alex" aria-haspopup="dialog">
+        <span class="avatar" id="me-avatar" style="background:#F2B33D">AL</span>
+      </button>
     </div>
 
     <div class="chat" id="chat" aria-live="polite">
@@ -334,8 +413,8 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
         </button>
         <label class="hidden" for="input">Message Sal</label>
-        <textarea id="input" rows="1" placeholder="Tell Sal what you're in the mood for"></textarea>
-        <button type="button" class="tool" aria-label="Record a voice note">
+        <textarea id="input" rows="1" placeholder="Message Sal" enterkeyhint="send" autocomplete="off"></textarea>
+        <button type="button" class="tool mic" aria-label="Record a voice note">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
         </button>
         <button type="submit" class="tool send" aria-label="Send">
@@ -368,10 +447,23 @@
   </aside>
 
   <nav class="tabs" aria-label="Sections">
-    <button aria-current="page" data-tab="chat">Chat</button>
-    <button data-tab="week">This week</button>
-    <button data-tab="profile">Profiles</button>
+    <button aria-current="page" data-tab="chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>Chat
+    </button>
+    <button data-tab="week">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>This week
+    </button>
+    <button data-tab="profile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.4"/><path d="M16.5 14.6c2.6.2 4.5 2 4.5 4.9"/></svg>Profiles
+    </button>
   </nav>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+  <div class="grab"></div>
+  <h2 id="sheet-title">Who's cooking?</h2>
+  <div class="who" id="who-sheet"></div>
 </div>
 
 <script>
@@ -440,7 +532,7 @@
     }, 650);
   }
 
-  $("#form").addEventListener("submit", e => { e.preventDefault(); const v = $("#input").value.trim(); if (v) { say(v); $("#input").value = ""; } });
+  $("#form").addEventListener("submit", e => { e.preventDefault(); const v = $("#input").value.trim(); if (v) { say(v); $("#input").value = ""; $("#input").dispatchEvent(new Event("input")); } });
   $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#form").requestSubmit(); } });
   document.addEventListener("click", e => {
     const chip = e.target.closest("[data-say]"); if (chip) say(chip.dataset.say);
@@ -462,14 +554,41 @@
   $$(".nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
   $$(".tabs button").forEach(b => b.addEventListener("click", () => show(b.dataset.tab)));
 
-  $$("#who button").forEach(b => b.addEventListener("click", () => {
-    $$("#who button").forEach(x => x.setAttribute("aria-pressed", x === b));
-    me = b.dataset.user; renderProfiles();
-  }));
+  // the phone sheet reuses the sidebar's person buttons
+  $("#who-sheet").innerHTML = $("#who").innerHTML;
+  function setMe(name) {
+    me = name;
+    $$(".who button").forEach(x => x.setAttribute("aria-pressed", x.dataset.user === name));
+    const av = $("#me-avatar");
+    av.textContent = name.slice(0, 2).toUpperCase();
+    av.style.background = profiles[name].color;
+    $("#me-btn").setAttribute("aria-label", `Switch person, now ${name}`);
+    renderProfiles();
+  }
+  function sheet(open) {
+    $("#sheet").classList.toggle("open", open);
+    $("#scrim").classList.toggle("open", open);
+    if (open) $("#who-sheet button[aria-pressed='true']").focus(); else $("#me-btn").focus();
+  }
+  $$(".who button").forEach(b => b.addEventListener("click", () => { setMe(b.dataset.user); sheet(false); }));
+  $("#me-btn").addEventListener("click", () => sheet(true));
+  $("#scrim").addEventListener("click", () => sheet(false));
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && $("#sheet").classList.contains("open")) sheet(false); });
+
+  // swap mic for send once there's text, and drop the tab bar while the keyboard is up
+  const input = $("#input");
+  input.addEventListener("input", () => {
+    $(".composer").classList.toggle("typing", input.value.trim() !== "");
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  });
+  input.addEventListener("focus", () => $("#app").classList.add("keyboard"));
+  input.addEventListener("blur", () => $("#app").classList.remove("keyboard"));
 
   $("#push").addEventListener("click", e => { e.target.disabled = true; e.target.textContent = "Sent to Mealie"; });
 
   renderDays(); renderProfiles();
+  $("#chat").scrollTop = $("#chat").scrollHeight;
 </script>
 </body>
 </html>
