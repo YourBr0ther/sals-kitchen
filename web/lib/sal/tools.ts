@@ -5,7 +5,7 @@ import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes 
 import { logActivity } from "../activity";
 import { UserError, userMessage } from "../errors";
 import { recordFeedback, VERDICT_WORDS, type Verdict } from "../feedback";
-import { buildGroceryList } from "../groceries";
+import { buildGroceryList, listFor } from "../groceries";
 import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS, windowRows } from "../memory";
 import { changePantry } from "../pantry";
 import { extractRecipe, NoRecipeError, type Recipe, recipeFromText } from "../recipe";
@@ -213,6 +213,17 @@ export const TOOLS: Tool[] = [
   {
     type: "function",
     function: {
+      name: "get_grocery_list",
+      description: "Read the week's grocery list from Mealie: what's still to buy and what's already checked off.",
+      parameters: {
+        type: "object",
+        properties: { week_of: { type: "string", description: "Any date (YYYY-MM-DD) in the week. Defaults to this week." } },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "update_pantry",
       description:
         "Change the household's list of what's already in the kitchen (shared by everyone). Add things they say they have or just bought, " +
@@ -260,6 +271,7 @@ export const TOOL_LABELS: Record<string, string> = {
   save_recipe_from_chat: "Reading the recipe",
   make_grocery_list: "Asking to make the grocery list",
   update_pantry: "Updating the kitchen list",
+  get_grocery_list: "Checking the grocery list",
   log_dinner: "Writing down how it went",
 };
 
@@ -501,6 +513,14 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       if (!planned.length) return { error: "Nothing's planned that week yet, so there's nothing to shop for." };
       const id = createAction(ctx, "make_grocery_list", { start }, `Make the grocery list in Mealie for the week of ${start} (${planned.length} dinners)`);
       return { status: "waiting for approval", actionId: id };
+    }
+    case "get_grocery_list": {
+      const list = await listFor(isDate(args.week_of) ? args.week_of : localDate());
+      if (!list) return { note: "No grocery list has been made for that week. Offer make_grocery_list." };
+      return {
+        toBuy: list.items.filter((i) => !i.checked).map((i) => `${i.text} [${i.aisle}]`),
+        alreadyBought: list.items.filter((i) => i.checked).map((i) => i.text),
+      };
     }
     case "update_pantry": {
       const strings = (v: unknown) =>

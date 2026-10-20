@@ -1,31 +1,12 @@
 import { currentUser, unauthorized } from "@/lib/auth";
 import { addMessage } from "@/lib/chat";
 import { isDate } from "@/lib/dates";
-import { buildGroceryList } from "@/lib/groceries";
+import { buildGroceryList, listFor } from "@/lib/groceries";
 import { guarded, readJson } from "@/lib/http";
 import { userMessage } from "@/lib/errors";
 import { getWeek } from "@/lib/week";
-import { getDb } from "@/lib/db";
-import { weekStart } from "@/lib/dates";
-import { AISLES, getShoppingList, labelNames, setShoppingItemChecked, shoppingListUrl } from "@/lib/mealie";
+import { setShoppingItemChecked } from "@/lib/mealie";
 import type { NextRequest } from "next/server";
-
-/** The week's list this app made, read from Mealie. Null when there isn't one (or it was deleted there). */
-async function listFor(start: string) {
-  const row = getDb().prepare("select list_id from grocery_lists where week_start = ?").get(weekStart(start)) as { list_id: string } | undefined;
-  if (!row) return null;
-  const list = await getShoppingList(row.list_id);
-  if (!list) return null;
-  const labels = await labelNames();
-  const order = (aisle: string) => {
-    const i = AISLES.indexOf(aisle);
-    return i < 0 ? AISLES.length : i;
-  };
-  const items = list.items
-    .map((i) => ({ id: i.id, text: i.note, checked: i.checked, aisle: (i.labelId && labels.get(i.labelId)) || "Other", position: i.position }))
-    .sort((a, b) => order(a.aisle) - order(b.aisle) || a.position - b.position);
-  return { listId: row.list_id, name: list.name, url: shoppingListUrl(row.list_id), items };
-}
 
 /** The grocery list for the store: everyone in the household shares it. */
 export const GET = guarded("week/groceries GET", async function GET(req: NextRequest) {

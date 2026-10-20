@@ -2,7 +2,7 @@ import { logActivity } from "./activity";
 import { getDb, listUsers } from "./db";
 import { addDays, localDate, shortDate, weekday, weekStart } from "./dates";
 import { llmJson } from "./llm";
-import { addShoppingItems, AISLES, createShoppingList, deleteShoppingItems, getRecipe, getShoppingList, shoppingListUrl } from "./mealie";
+import { addShoppingItems, AISLES, createShoppingList, deleteShoppingItems, getRecipe, getShoppingList, labelNames, shoppingListUrl } from "./mealie";
 import { listPantry } from "./pantry";
 import { UserError } from "./errors";
 import { extractRecipe, NoRecipeError } from "./recipe";
@@ -240,4 +240,21 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
     kept: checked.length,
     warning: cleanupFailed ? "The old list's items are still there too; making it again will clear them." : undefined,
   };
+}
+
+/** The week's list this app made, read from Mealie. Null when there isn't one (or it was deleted there). */
+export async function listFor(start: string) {
+  const row = getDb().prepare("select list_id from grocery_lists where week_start = ?").get(weekStart(start)) as { list_id: string } | undefined;
+  if (!row) return null;
+  const list = await getShoppingList(row.list_id);
+  if (!list) return null;
+  const labels = await labelNames();
+  const order = (aisle: string) => {
+    const i = AISLES.indexOf(aisle);
+    return i < 0 ? AISLES.length : i;
+  };
+  const items = list.items
+    .map((i) => ({ id: i.id, text: i.note, checked: i.checked, aisle: (i.labelId && labels.get(i.labelId)) || "Other", position: i.position }))
+    .sort((a, b) => order(a.aisle) - order(b.aisle) || a.position - b.position);
+  return { listId: row.list_id, name: list.name, url: shoppingListUrl(row.list_id), items };
 }

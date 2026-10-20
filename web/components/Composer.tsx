@@ -47,6 +47,11 @@ export default function Composer({
   useEffect(() => {
     attachmentsRef.current = attachments;
   }, [attachments]);
+  // same for onSend: a recording can outlast a re-render that hands down a new one
+  const onSendRef = useRef(onSend);
+  useEffect(() => {
+    onSendRef.current = onSend;
+  }, [onSend]);
 
   useEffect(() => {
     const el = input.current;
@@ -145,7 +150,7 @@ export default function Composer({
           const sending = attachmentsRef.current;
           if (!said) {
             setError("Couldn't make out any words. Try again?");
-          } else if (await onSend(said, sending.map((a) => a.id), true)) {
+          } else if (await onSendRef.current(said, sending.map((a) => a.id), true)) {
             const sent = new Set(sending.map((a) => a.id));
             setAttachments((all) => all.filter((a) => !sent.has(a.id)));
           } else {

@@ -39,6 +39,7 @@
 | `import_recipe_url(url, plan_for?)` | Save a web recipe into Mealie, optionally onto a night. Refused up front if the page has no recipe | Yes |
 | `save_recipe_from_chat(title?, plan_for?)` | Save a recipe from the person's latest photo or long pasted message | Yes |
 | `make_grocery_list(week_of?)` | Write the week's grocery list into Mealie | Yes |
+| `get_grocery_list(week_of?)` | Read what's left to buy and what's checked off | No |
 | `update_pantry(add[], remove[])` | Change the shared kitchen list | Only while web text is in the conversation |
 | `log_dinner(date, verdict, comment?)` | Save how a dinner went for the person talking | Only while web text is in the conversation |
 | `update_profile(person, changes[])` | Add or remove likes, won't-eats, allergies, notes | Yes |

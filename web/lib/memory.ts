@@ -250,6 +250,7 @@ export const WEB_TOOLS = new Set([
   "get_week",
   "plan_nights",
   "log_dinner",
+  "get_grocery_list",
 ]);
 
 /**
