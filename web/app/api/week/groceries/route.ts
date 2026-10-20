@@ -5,7 +5,9 @@ import { buildGroceryList, listFor } from "@/lib/groceries";
 import { guarded, readJson } from "@/lib/http";
 import { userMessage } from "@/lib/errors";
 import { getWeek } from "@/lib/week";
-import { setShoppingItemChecked } from "@/lib/mealie";
+import { getShoppingList, setShoppingItemChecked } from "@/lib/mealie";
+import { getDb } from "@/lib/db";
+import { weekStart } from "@/lib/dates";
 import type { NextRequest } from "next/server";
 
 /** The grocery list for the store: everyone in the household shares it. */
@@ -30,10 +32,12 @@ export const PATCH = guarded("week/groceries PATCH", async function PATCH(req: R
   const { start, itemId, checked } = parsed.data;
   if (!isDate(start) || typeof itemId !== "string" || typeof checked !== "boolean") return Response.json({ error: "Bad request." }, { status: 400 });
   try {
-    const list = await listFor(start);
-    if (!list?.items.some((i) => i.id === itemId)) return Response.json({ error: "That item isn't on the list anymore.", list }, { status: 404 });
+    // one read to confirm the item is on this week's list (so no other Mealie item can be changed from here)
+    const row = getDb().prepare("select list_id from grocery_lists where week_start = ?").get(weekStart(start)) as { list_id: string } | undefined;
+    const list = row ? await getShoppingList(row.list_id) : null;
+    if (!list?.items.some((i) => i.id === itemId)) return Response.json({ error: "That item isn't on the list anymore." }, { status: 404 });
     await setShoppingItemChecked(itemId, checked);
-    return Response.json({ list: await listFor(start) });
+    return Response.json({ id: itemId, checked });
   } catch (e) {
     return Response.json({ error: userMessage(e, "Couldn't check that off. Try again.", "week/groceries PATCH") }, { status: 502 });
   }

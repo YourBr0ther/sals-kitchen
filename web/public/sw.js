@@ -130,8 +130,19 @@ self.addEventListener("notificationclick", (event) => {
 /** Fresh from the server when there's signal; the last copy when there isn't. */
 async function recipeFromNetworkOrCache(event, req) {
   const cache = await caches.open(RECIPE_CACHE);
+  const network = fetch(req);
+  // if the saved card wins the race, a late failure here is nobody's business
+  network.catch(() => {});
   try {
-    const res = await fetch(req);
+    // a phone with one bar can hang for a minute; after a few seconds the saved card is better
+    const res = await Promise.race([
+      network,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("slow")), 4000)),
+    ]);
+    if (res.status >= 500) {
+      const hit = await cache.match(req);
+      if (hit) return hit;
+    }
     if (res.ok) {
       const copy = res.clone();
       event.waitUntil(
@@ -145,6 +156,8 @@ async function recipeFromNetworkOrCache(event, req) {
   } catch (e) {
     const hit = await cache.match(req);
     if (hit) return hit;
+    // slow but nothing saved: keep waiting for the network after all
+    if (e instanceof Error && e.message === "slow") return network;
     throw e;
   }
 }

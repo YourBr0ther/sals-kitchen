@@ -95,6 +95,22 @@ function boot() {
   timers = timers.map((t) => (!t.done && t.endsAt <= Date.now() ? { ...t, done: true } : t));
   timers.filter((t) => !t.done).forEach(schedule);
   document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && catchUp());
+  // iPhones suspend sound when the app goes to the background; any tap wakes it back up for the next beep
+  document.addEventListener("pointerdown", () => void audio?.resume().catch(() => {}), { passive: true });
+  // another tab changed the timers: follow it instead of overwriting it
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORE_KEY) return;
+    try {
+      const next = JSON.parse(e.newValue ?? "[]") as Timer[];
+      handles.forEach(clearTimeout);
+      handles.clear();
+      timers = Array.isArray(next) ? next : [];
+      timers.filter((t) => !t.done).forEach(schedule);
+      listeners.forEach((l) => l());
+    } catch {
+      // ignore a garbled copy
+    }
+  });
 }
 
 export function startTimer(t: { slug: string; recipe: string; key: string; label: string; seconds: number }) {
@@ -134,7 +150,8 @@ const EMPTY: Timer[] = [];
 /** Every timer, plus a clock that ticks while any is running. */
 export function useTimers(): { timers: Timer[]; now: number } {
   const all = useSyncExternalStore(subscribe, () => timers, () => EMPTY);
-  const [now, setNow] = useState(0);
+  // starts at the real time, so a new timer never flashes a huge countdown
+  const [now, setNow] = useState(() => Date.now());
   const running = all.some((t) => !t.done);
   useEffect(() => {
     if (!running) return;

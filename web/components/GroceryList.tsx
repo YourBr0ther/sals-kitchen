@@ -30,6 +30,30 @@ function writeSaved(start: string, s: Saved) {
   }
 }
 
+/**
+ * Send check-offs left on this phone (from the offline page, or a list closed before it synced).
+ * Called when the app opens or comes back online, so they reach Mealie without opening the list.
+ */
+export async function sendSavedChecks(start: string) {
+  if (!navigator.onLine) return;
+  for (;;) {
+    const saved = readSaved(start);
+    const next = saved && Object.entries(saved.pending)[0];
+    if (!saved || !next) return;
+    const [itemId, checked] = next;
+    try {
+      const res = await fetch("/api/week/groceries", jsonInit("PATCH", { start, itemId, checked }));
+      if (!res.ok && res.status !== 404) return;
+    } catch {
+      return;
+    }
+    const now = readSaved(start) ?? saved;
+    if (now.pending[itemId] === checked) delete now.pending[itemId];
+    now.list.items = now.list.items.map((i) => (i.id === itemId ? { ...i, checked } : i));
+    writeSaved(start, now);
+  }
+}
+
 const CheckIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M5 12.5l4.5 4.5L19 7.5" />
@@ -48,13 +72,15 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
   const [missing, setMissing] = useState(false);
   const [showChecked, setShowChecked] = useState(false);
   const flushing = useRef(false);
-  const pendingRef = useRef(pending);
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
+  // the queue of check-offs not yet in Mealie; the ref is the truth, state only mirrors it for drawing
+  const pendingRef = useRef<Record<string, boolean>>({});
+  const listRef = useRef<List | null>(null);
+  const [syncError, setSyncError] = useState("");
 
   const remember = useCallback(
     (l: List, p: Record<string, boolean>) => {
+      listRef.current = l;
+      pendingRef.current = p;
       setList(l);
       setPending(p);
       writeSaved(start, { list: l, at: Date.now(), pending: p });
@@ -62,20 +88,38 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
     [start],
   );
 
-  /** Send checks made offline, oldest first. Stops at the first failure and tries again later. */
+  /**
+   * Send queued check-offs, one at a time, until the queue is empty. Taps made while it runs
+   * join the same queue and get sent by this same loop. A failure stops it until the next try.
+   */
   const flush = useCallback(async () => {
     if (flushing.current || !navigator.onLine) return;
     flushing.current = true;
     try {
-      for (const [itemId, checked] of Object.entries(pendingRef.current)) {
+      for (;;) {
+        const next = Object.entries(pendingRef.current)[0];
+        if (!next) break;
+        const [itemId, checked] = next;
         const res = await fetch("/api/week/groceries", jsonInit("PATCH", { start, itemId, checked }));
-        const r = (await res.json().catch(() => ({}))) as { list?: List; error?: string };
-        if (!res.ok && res.status !== 404) break;
-        const { [itemId]: _sent, ...rest } = pendingRef.current;
-        void _sent;
-        pendingRef.current = rest;
-        if (r.list) remember(r.list, rest);
-        else setPending(rest);
+        if (res.status === 401) return window.location.assign("/login");
+        const r = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok && res.status !== 404) {
+          setSyncError(r.error ?? "Couldn't reach Mealie to check that off. It'll try again.");
+          break;
+        }
+        setSyncError("");
+        // a second tap on the same item while this was sending wins; leave it queued
+        const now = { ...pendingRef.current };
+        if (now[itemId] === checked) delete now[itemId];
+        const l = listRef.current;
+        const items = l && res.ok ? l.items.map((i) => (i.id === itemId ? { ...i, checked } : i)) : (l?.items ?? []);
+        // a 404 means it's gone from Mealie; drop it from the list too
+        const kept = res.status === 404 ? items.filter((i) => i.id !== itemId) : items;
+        if (l) remember({ ...l, items: kept }, now);
+        else {
+          pendingRef.current = now;
+          setPending(now);
+        }
       }
     } catch {
       // still no connection; the next 'online' tries again
@@ -96,15 +140,18 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
         return;
       }
       setSavedAt(null);
-      remember(r.list, pendingRef.current);
+      // queued taps that point at items Mealie no longer has can't be sent anywhere
+      const ids = new Set(r.list.items.map((i) => i.id));
+      remember(r.list, Object.fromEntries(Object.entries(pendingRef.current).filter(([id]) => ids.has(id))));
       void flush();
     } catch (e) {
       const saved = readSaved(start);
       if (saved) {
         // show the copy on this phone and say how old it is
+        listRef.current = saved.list;
+        pendingRef.current = saved.pending;
         setList(saved.list);
         setPending(saved.pending);
-        pendingRef.current = saved.pending;
         setSavedAt(saved.at);
       }
       setError(navigator.onLine ? (e as Error).message : "You're offline.");
@@ -116,9 +163,10 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
     const saved = readSaved(start);
     const t = setTimeout(() => {
       if (saved) {
+        listRef.current = saved.list;
+        pendingRef.current = saved.pending;
         setList(saved.list);
         setPending(saved.pending);
-        pendingRef.current = saved.pending;
       }
       void load();
     }, 0);
@@ -151,12 +199,11 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
   }, [onClient]);
 
   function toggle(item: Item) {
-    if (!list) return;
-    const checked = !(pending[item.id] ?? item.checked);
+    const l = listRef.current;
+    if (!l) return;
+    const current = pendingRef.current[item.id] ?? l.items.find((i) => i.id === item.id)?.checked ?? item.checked;
     // shows right away; offline, it waits on this phone until the connection is back
-    const next = { ...pending, [item.id]: checked };
-    pendingRef.current = next;
-    remember(list, next);
+    remember(l, { ...pendingRef.current, [item.id]: !current });
     void flush();
   }
 
@@ -177,12 +224,14 @@ export default function GroceryList({ start, onClose }: { start: string; onClose
           <h2 id={titleId}>Grocery list</h2>
           <button type="button" className="gl-close" onClick={onClose} aria-label="Close grocery list"><XIcon /></button>
         </div>
-        {(error || savedAt || waiting > 0) && (
+        {(error || syncError || savedAt || waiting > 0) && (
           <p className="gl-status" role="status">
-            {error}
+            {error || syncError}
             {savedAt && ` Showing the copy on this phone from ${new Date(savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
-            {waiting > 0 && ` ${waiting} check-off${waiting === 1 ? "" : "s"} will sync when you're back online.`}
-            {error && navigator.onLine && <button type="button" className="ghost" onClick={() => void load()}>Try again</button>}
+            {waiting > 0 && !navigator.onLine && ` ${waiting} check-off${waiting === 1 ? "" : "s"} will sync when you're back online.`}
+            {(error || syncError) && navigator.onLine && (
+              <button type="button" className="ghost" onClick={() => void (syncError ? flush() : load())}>Try again</button>
+            )}
           </p>
         )}
         {missing && !list && <p className="gl-empty">There&apos;s no grocery list for this week yet. Make one from the week ticket.</p>}

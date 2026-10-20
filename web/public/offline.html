@@ -6,29 +6,88 @@
 <meta name="theme-color" content="#1E4D3A">
 <title>Sal's Kitchen</title>
 <style>
-  html, body { height: 100%; margin: 0; }
-  body {
-    font-family: system-ui, -apple-system, sans-serif;
-    background: #E4EEE8; color: #0E1F18;
-    display: grid; place-items: center; padding: 24px; box-sizing: border-box; text-align: center;
+  :root { --bg: #E4EEE8; --card: #fff; --ink: #0E1F18; --muted: #5A6B63; --line: #d8d1c0; --forest: #1E4D3A; --accent: #1E4D3A; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1915; --card: #15211b; --ink: #e3ece7; --muted: #9cb2a7; --line: #3b3830; --accent: #8fd3b0; }
   }
-  main { background: #fff; border-radius: 24px; padding: 28px 24px; max-width: 360px; }
+  html, body { min-height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink);
+    display: grid; place-items: center; padding: calc(24px + env(safe-area-inset-top)) 16px 24px; box-sizing: border-box;
+  }
+  main { background: var(--card); border-radius: 24px; padding: 28px 22px; width: min(440px, 100%); box-sizing: border-box; }
+  .top { text-align: center; }
   img { width: 72px; height: 72px; border-radius: 20px; }
-  h1 { font-size: 22px; margin: 12px 0 6px; color: #1E4D3A; }
-  p { color: #5A6B63; margin: 0 0 20px; line-height: 1.5; }
-  button { border: 0; border-radius: 12px; background: #1E4D3A; color: #fff; font: inherit; font-weight: 600; padding: 12px 20px; min-height: 44px; }
+  h1 { font-size: 22px; margin: 12px 0 6px; color: var(--accent); }
+  h2 { font-size: 18px; margin: 24px 0 2px; }
+  h3 { font-size: 13px; color: var(--muted); margin: 14px 0 2px; }
+  p { color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li + li { border-top: 1px dotted var(--line); }
+  label { display: flex; gap: 12px; align-items: center; min-height: 48px; font-size: 17px; }
+  input { width: 22px; height: 22px; accent-color: #1E4D3A; flex: none; }
+  input:checked + span { color: var(--muted); text-decoration: line-through; }
+  .btn { display: block; margin: 20px auto 0; border: 0; border-radius: 12px; background: #1E4D3A; color: #fff; font: inherit; font-weight: 600; padding: 12px 20px; min-height: 44px; }
 </style>
 </head>
 <body>
 <main>
-  <img src="/icon.svg" alt="">
-  <h1>Sal's out of reach</h1>
-  <p>Your phone isn't connected right now, so Sal can't hear you. Your chats and the week are safe. Try again once you're back online.</p>
-  <button onclick="location.reload()">Try again</button>
+  <div class="top">
+    <img src="/icon.svg" alt="">
+    <h1>Sal's out of reach</h1>
+    <p>Your phone isn't connected right now, so Sal can't hear you. Your chats and the week are safe.</p>
+  </div>
+  <section id="list" hidden>
+    <h2>This week's grocery list</h2>
+    <p id="when"></p>
+    <div id="items"></div>
+    <p>Check-offs here go to Mealie the next time the app opens with signal.</p>
+  </section>
+  <button class="btn" onclick="location.reload()">Try again</button>
 </main>
 <script>
   // come back on our own as soon as the connection returns
   addEventListener("online", () => location.reload());
+
+  // the app keeps this week's grocery list on the phone; show it so the store trip still works
+  (function () {
+    const d = new Date();
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const key = "sal-groceries-" + d.toLocaleDateString("en-CA");
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { saved = null; }
+    if (!saved || !saved.list || !saved.list.items || !saved.list.items.length) return;
+    saved.pending = saved.pending || {};
+    const box = document.getElementById("items");
+    const aisles = [];
+    for (const i of saved.list.items) if (!aisles.includes(i.aisle)) aisles.push(i.aisle);
+    for (const a of aisles) {
+      const h = document.createElement("h3");
+      h.textContent = a;
+      const ul = document.createElement("ul");
+      for (const i of saved.list.items.filter((x) => x.aisle === a)) {
+        const li = document.createElement("li");
+        const label = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = i.id in saved.pending ? saved.pending[i.id] : i.checked;
+        // same queue the app uses, so the app sends these once it's back online
+        input.addEventListener("change", () => {
+          saved.pending[i.id] = input.checked;
+          try { localStorage.setItem(key, JSON.stringify(saved)); } catch (e) {}
+        });
+        const span = document.createElement("span");
+        span.textContent = i.text;
+        label.append(input, span);
+        li.append(label);
+        ul.append(li);
+      }
+      box.append(h, ul);
+    }
+    document.getElementById("when").textContent =
+      "The copy on this phone from " + new Date(saved.at).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + ".";
+    document.getElementById("list").hidden = false;
+  })();
 </script>
 </body>
 </html>

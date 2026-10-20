@@ -11,7 +11,7 @@ import PastConversations from "./PastConversations";
 import ProfilesView, { FavesCard, type ProfileEntry } from "./ProfilesView";
 import { useInstall, useOnline } from "./Pwa";
 import RecipeSheet from "./RecipeSheet";
-import GroceryList from "./GroceryList";
+import GroceryList, { sendSavedChecks } from "./GroceryList";
 import SettingsView from "./SettingsView";
 import TimerTray from "./TimerTray";
 import { api, jsonInit } from "./util";
@@ -100,6 +100,23 @@ export default function Kitchen({ me }: { me: User }) {
     }, 0);
     return () => clearTimeout(t);
   }, [loadProfiles, loadSettings]);
+
+  // check-offs made on the offline page wait on this phone; send them once there's signal
+  useEffect(() => {
+    if (groceries) return; // the open list sends its own
+    const monday = () => {
+      const d = new Date();
+      d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+      return d.toLocaleDateString("en-CA");
+    };
+    const go = () => void sendSavedChecks(monday());
+    const t = setTimeout(go, 0);
+    window.addEventListener("online", go);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("online", go);
+    };
+  }, [groceries]);
 
   // back in the app after a while: the week may have changed on someone else's phone
   useEffect(() => {
