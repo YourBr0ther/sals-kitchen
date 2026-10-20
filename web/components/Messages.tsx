@@ -53,9 +53,12 @@ function ActionResult({ a }: { a: ActionView }) {
   if (a.status === "approved") {
     // the grocery list lives in Mealie; link straight to it
     const url = a.kind === "make_grocery_list" ? a.result?.match(/\((https?:\/\/[^)\s]+)\)/)?.[1] : undefined;
+    // the result says what actually happened, including any part that didn't work
+    const said = (a.result ?? "Done.").replace(/ \(slug [^)]+\)/g, "").replace(/ \(https?:\/\/[^)\s]+\)/g, "");
     return (
       <span className="done">
-        Done.{url && <> <a href={url} target="_blank" rel="noreferrer noopener">Open the list in Mealie</a></>}
+        {said}
+        {url && <> <a href={url} target="_blank" rel="noreferrer noopener">Open the list in Mealie</a></>}
       </span>
     );
   }

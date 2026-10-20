@@ -3,7 +3,7 @@ import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROF
 import { addDays, isDate, localDate, weekday, weekStart } from "../dates";
 import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
 import { logActivity } from "../activity";
-import { describeLlmError } from "../llm";
+import { UserError, userMessage } from "../errors";
 import { recordFeedback, VERDICT_WORDS, type Verdict } from "../feedback";
 import { buildGroceryList } from "../groceries";
 import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS, windowRows } from "../memory";
@@ -544,19 +544,21 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
 export async function executeAction(
   actionId: number,
   user: User,
-): Promise<{ ok: boolean; message: string; changed: ("week" | "profiles" | "pantry")[] }> {
+): Promise<{ ok: boolean; message: string; changed: ("week" | "profiles" | "pantry")[]; partial: boolean }> {
   const d = getDb();
   const a = d.prepare("select * from pending_actions where id = ? and user_id = ?").get(actionId, user.id) as
     | { id: number; kind: string; args: string; status: string; summary: string }
     | undefined;
-  if (!a) throw new Error("No such request.");
+  if (!a) throw new UserError("No such request.");
   // claim it before doing any work, so two taps (or two phones) can't both run it
   const claimed = d.prepare("update pending_actions set status = 'running' where id = ? and status = 'pending'").run(a.id);
-  if (!claimed.changes) throw new Error("Already handled.");
+  if (!claimed.changes) throw new UserError("Already handled.");
   const args = JSON.parse(a.args);
   try {
     let message: string;
     const changed: ("week" | "profiles" | "pantry")[] = [];
+    // it worked, but part of it didn't; Sal follows up so the person hears which part
+    let partial = false;
     if (a.kind === "import_recipe_url" || a.kind === "import_recipe") {
       // save exactly what was read when Sal asked; older requests only stored the URL
       const recipe: Recipe = args.recipe ?? (await extractRecipe(args.url));
@@ -564,30 +566,51 @@ export async function executeAction(
       message = existed ? `"${r.name}" was already in the recipe box (slug ${r.slug}).` : `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
       if (!existed) {
         logActivity(user.id, `saved ${r.name} to the recipe box`);
-        // filing it is nice to have; a hiccup here shouldn't undo the save
-        const filed = await autoTag(r.slug, recipe).catch((e) => console.warn(`[tagger] ${r.slug}:`, e));
+        // filing it is nice to have; a hiccup or a slow answer shouldn't hold up or undo the save
+        const filed = await Promise.race([
+          autoTag(r.slug, recipe),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 45_000)),
+        ]).catch((e) => {
+          console.warn(`[tagger] ${r.slug}:`, e);
+          return null;
+        });
         if (filed?.tags.length) message += ` Tagged ${filed.tags.join(", ")}.`;
+        else if (!filed) message += " Couldn't tag it this time; it's saved without tags.";
       }
       if (args.planFor) {
-        await updateNight({ date: args.planFor, recipeSlug: r.slug, title: r.name, sourceUrl: null }, user.id);
-        message += ` Put it on ${args.planFor}.`;
-        changed.push("week");
+        try {
+          await updateNight({ date: args.planFor, recipeSlug: r.slug, title: r.name, sourceUrl: null }, user.id);
+          message += ` Put it on ${args.planFor}.`;
+          changed.push("week");
+        } catch (e) {
+          message += ` Couldn't put it on ${args.planFor}: ${userMessage(e, "something went wrong.", "plan saved recipe")}`;
+          partial = true;
+        }
       }
     } else if (a.kind === "make_grocery_list") {
       const r = await buildGroceryList(args.start, user.id);
       message = `Made the grocery list in Mealie: ${r.count} items (${r.url}).`;
       if (r.leftOff.length) message += ` Left off: ${r.leftOff.join(", ")}.`;
-      if (r.missing.length) message += ` No recipe to shop from for ${r.missing.join(", ")}.`;
+      if (r.missing.length) {
+        message += ` No recipe to shop from for ${r.missing.join(", ")}.`;
+        partial = true;
+      }
       changed.push("week");
     } else if (a.kind === "update_pantry") {
       const r = changePantry(user.id, args.add ?? [], args.remove ?? []);
-      message = [r.added.length && `Added ${r.added.join(", ")} to the kitchen list.`, r.removed.length && `Took ${r.removed.join(", ")} off it.`]
+      message = [
+        r.added.length && `Added ${r.added.join(", ")} to the kitchen list.`,
+        r.removed.length && `Took ${r.removed.join(", ")} off it.`,
+        r.full && "The kitchen list is full (150 things). Take some off first.",
+      ]
         .filter(Boolean)
         .join(" ") || "The kitchen list already looked like that.";
+      partial = r.full;
       changed.push("pantry");
     } else if (a.kind === "log_dinner") {
       const r = await recordFeedback(user, args.date, args.verdict, args.comment);
       message = `Saved how ${r.title} went.${r.warning ? ` ${r.warning}` : ""}`;
+      partial = Boolean(r.warning);
       changed.push("week");
     } else if (a.kind === "remember") {
       const saved = addMemory(user.id, String(args.fact), "chat");
@@ -598,7 +621,7 @@ export async function executeAction(
       message = removed ? `Sal forgot ${removed === 1 ? "that" : `${removed} things`}.` : "Nothing left to forget.";
     } else if (a.kind === "update_profile") {
       const target = getUser(args.userId);
-      if (!target || !canEditProfile(user, target)) throw new Error("Not allowed to change that profile.");
+      if (!target || !canEditProfile(user, target)) throw new UserError("Not allowed to change that profile.");
       applyProfileChange(target.id, args.change, user.id, "chat");
       message = `${a.summary}. Done.`;
       changed.push("profiles");
@@ -606,11 +629,11 @@ export async function executeAction(
       throw new Error(`Unknown action ${a.kind}`);
     }
     d.prepare("update pending_actions set status = 'approved', result = ? where id = ?").run(message, a.id);
-    return { ok: true, message, changed };
+    return { ok: true, message, changed, partial };
   } catch (e) {
-    const message = e instanceof OpenAI.APIError ? describeLlmError(e).message : (e as Error).message;
+    const message = userMessage(e, "Something went wrong doing that. Try again.", `action ${a.kind}`);
     d.prepare("update pending_actions set status = 'failed', result = ? where id = ?").run(message, a.id);
-    return { ok: false, message, changed: [] };
+    return { ok: false, message, changed: [], partial: false };
   }
 }
 
@@ -618,7 +641,7 @@ export function declineAction(actionId: number, user: User) {
   const r = getDb()
     .prepare("update pending_actions set status = 'declined' where id = ? and user_id = ? and status = 'pending'")
     .run(actionId, user.id);
-  if (!r.changes) throw new Error("Already handled.");
+  if (!r.changes) throw new UserError("Already handled.");
   const a = getDb().prepare("select summary from pending_actions where id = ?").get(actionId) as { summary: string };
   return a.summary;
 }

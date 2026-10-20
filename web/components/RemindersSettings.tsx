@@ -119,7 +119,8 @@ export default function RemindersSettings() {
       const sub = await reg?.pushManager.getSubscription();
       if (sub) {
         await api("/api/push", jsonInit("DELETE", { endpoint: sub.endpoint }));
-        await sub.unsubscribe();
+        // the server has stopped sending either way; the phone forgetting its sign-up is tidying up
+        await sub.unsubscribe().catch((e) => console.warn("[push] unsubscribe failed:", e));
       }
       setDevice("off");
     } catch (e) {
@@ -201,7 +202,10 @@ export default function RemindersSettings() {
         )}
         {error && (
           <p className="reminders-error" role="alert">
-            {error}
+            {error}{" "}
+            {(!reminders || !publicKey) && (
+              <button type="button" className="ghost" onClick={() => void load()}>Try again</button>
+            )}
           </p>
         )}
       </div>

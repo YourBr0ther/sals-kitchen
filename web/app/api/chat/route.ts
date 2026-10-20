@@ -1,5 +1,5 @@
 import { currentUser, unauthorized } from "@/lib/auth";
-import { addMessage, pastConversations, visibleMessages } from "@/lib/chat";
+import { addMessage, hasPastConversations, visibleMessages } from "@/lib/chat";
 import { getDb } from "@/lib/db";
 import { guarded, readJson } from "@/lib/http";
 import { isBusy, releaseTurn, runTurn, tryStartTurn } from "@/lib/sal/agent";
@@ -8,7 +8,7 @@ import { isBusy, releaseTurn, runTurn, tryStartTurn } from "@/lib/sal/agent";
 export const GET = guarded("chat GET", async function GET() {
   const user = await currentUser();
   if (!user) return unauthorized();
-  return Response.json({ messages: visibleMessages(user.id), busy: isBusy(user.id), hasPast: pastConversations(user.id, 1).length > 0 });
+  return Response.json({ messages: visibleMessages(user.id), busy: isBusy(user.id), hasPast: hasPastConversations(user.id) });
 });
 
 // a turn that runs longer than this is cut off, so a stalled service can't lock someone out

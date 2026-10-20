@@ -119,7 +119,20 @@ export async function runOnce(now = new Date(), deps: Deps = defaultDeps): Promi
       const { reminders: r } = getSettings(userId);
       const go = async (kind: ReminderKind, day: string, msg: PushMessage) => {
         if (!claim(userId, kind, day)) return;
-        await deps.send(userId, msg);
+        // if the push service didn't take it, give the claim back so the next minute tries again
+        // (still inside the catch-up window, so a reminder can't arrive hours late)
+        const release = () => getDb().prepare("delete from notifications_sent where user_id = ? and kind = ? and day = ?").run(userId, kind, day);
+        let result: { sent?: number; failed?: number } | undefined;
+        try {
+          result = (await deps.send(userId, msg)) as typeof result;
+        } catch (e) {
+          release();
+          throw e;
+        }
+        if (result && !result.sent && result.failed) {
+          release();
+          return;
+        }
         sent.push({ userId, kind, day });
       };
 

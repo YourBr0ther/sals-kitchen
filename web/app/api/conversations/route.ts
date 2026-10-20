@@ -14,8 +14,13 @@ export const GET = guarded("conversations GET", async function GET(req: NextRequ
     const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const hits = (
       getDb()
-        .prepare(`select id from messages where user_id = ? and role in ('user', 'assistant') and (content like ? escape '\\' or payload like ? escape '\\')`)
-        .all(user.id, like, like) as { id: number }[]
+        // the words people and Sal said, plus photo descriptions; not the payload's keys
+        .prepare(
+          `select id from messages where user_id = ? and role in ('user', 'assistant') and payload not like '%"tool_calls"%' and (
+             content like ? escape '\\' or json_extract(payload, '$.display') like ? escape '\\'
+             or json_extract(payload, '$.photoNotes') like ? escape '\\')`,
+        )
+        .all(user.id, like, like, like) as { id: number }[]
     ).map((r) => r.id);
     conversations = conversations.filter((c) => hits.some((id) => id > c.after && id <= c.through));
   }

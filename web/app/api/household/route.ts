@@ -1,4 +1,5 @@
-import { checkPin, currentUser, hashPin, unauthorized } from "@/lib/auth";
+import { cookies } from "next/headers";
+import { checkPin, currentUser, hashPin, SESSION_COOKIE, unauthorized } from "@/lib/auth";
 import { getDb, listUsers } from "@/lib/db";
 import { guarded, readJson } from "@/lib/http";
 import { logActivity } from "@/lib/activity";
@@ -45,5 +46,8 @@ export const PATCH = guarded("household PATCH", async function PATCH(req: Reques
   const checked = checkPin(user.id, typeof currentPin === "string" ? currentPin : "");
   if (!checked.ok) return Response.json({ error: checked.error === "Wrong PIN." ? "Your current PIN doesn't match." : checked.error }, { status: 403 });
   getDb().prepare("update users set pin_hash = ? where id = ?").run(hashPin(newPin), user.id);
+  // other phones signed in with the old PIN have to log in again
+  const token = (await cookies()).get(SESSION_COOKIE)?.value ?? "";
+  getDb().prepare("delete from sessions where user_id = ? and token != ?").run(user.id, token);
   return Response.json({ ok: true });
 });

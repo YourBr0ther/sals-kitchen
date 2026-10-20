@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { config } from "./config";
+import { UserError } from "./errors";
 
 let client: OpenAI | undefined;
 // retries cover connection errors, 408/409/429 and 5xx before any text has streamed
@@ -19,7 +20,7 @@ export async function llmJson<T>(system: string, user: string, temperature = 0):
   try {
     return JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)) as T;
   } catch {
-    throw new Error("The AI service gave a garbled answer. Try again.");
+    throw new UserError("The AI service gave a garbled answer. Try again.");
   }
 }
 

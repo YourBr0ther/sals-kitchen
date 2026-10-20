@@ -201,6 +201,18 @@ export function visibleMessages(userId: number, range?: { after: number; through
 const lastResetId = (userId: number) =>
   (getDb().prepare("select coalesce(max(id), 0) as id from messages where user_id = ? and role = 'reset'").get(userId) as { id: number }).id;
 
+/** Whether this person has any earlier conversation (a "new conversation" with messages before it). Cheap enough to ask on every poll. */
+export function hasPastConversations(userId: number): boolean {
+  return Boolean(
+    getDb()
+      .prepare(
+        `select 1 from messages r where r.user_id = ? and r.role = 'reset'
+         and exists (select 1 from messages m where m.user_id = r.user_id and m.role = 'user' and m.id < r.id) limit 1`,
+      )
+      .get(userId),
+  );
+}
+
 export interface ConversationSummary {
   /** messages after this id and up to `through` belong to it */
   after: number;
@@ -232,7 +244,7 @@ export function pastConversations(userId: number, limit = 60): ConversationSumma
           through: r.id,
           startedAt: first!.created_at,
           endedAt: last!.created_at,
-          preview: rows.find((x) => x.id > after && x.role === "user" && x.content.trim())?.content.slice(0, 120) ?? "Photos and voice notes",
+          preview: rows.find((x) => x.id > after && x.id < r.id && x.role === "user" && x.content.trim())?.content.slice(0, 120) ?? "Photos and voice notes",
           messages: count,
         });
       }

@@ -19,6 +19,8 @@ export default function PastConversations({ me, onClose, onOpenRecipe }: { me: U
   const { speaking, speak, stop } = useSpeaker();
 
   const [searched, setSearched] = useState(false);
+  // the conversation being opened, so a slow phone shows something happening and a retry reopens it
+  const [opening, setOpening] = useState<ConversationSummary | null>(null);
 
   const load = useCallback(async (q = "") => {
     try {
@@ -37,10 +39,12 @@ export default function PastConversations({ me, onClose, onOpenRecipe }: { me: U
   }, [load, filter]);
 
   async function show(c: ConversationSummary) {
+    setOpening(c);
     try {
       setError("");
       const r = await api<{ messages: VisibleMessage[] }>(`/api/conversations/${c.through}`);
       setOpen({ c, messages: r.messages });
+      setOpening(null);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -55,7 +59,7 @@ export default function PastConversations({ me, onClose, onOpenRecipe }: { me: U
       </div>
       {error && (
         <p className="error-line" role="alert">
-          {error} <button className="ghost" onClick={() => void load(filter.trim())}>Try again</button>
+          {error} <button className="ghost" onClick={() => void (opening ? show(opening) : load(filter.trim()))}>Try again</button>
         </p>
       )}
       {open ? (
@@ -80,7 +84,7 @@ export default function PastConversations({ me, onClose, onOpenRecipe }: { me: U
           <ul>
             {list?.map((c) => (
               <li key={c.through}>
-                <button onClick={() => void show(c)}>
+                <button onClick={() => void show(c)} aria-busy={opening?.through === c.through} disabled={opening?.through === c.through && !error}>
                   <span className="when">{day(c.startedAt)}</span>
                   <span className="what">{c.preview}</span>
                   <small>{c.messages} messages</small>

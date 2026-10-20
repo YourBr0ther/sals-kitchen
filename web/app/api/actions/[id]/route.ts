@@ -1,6 +1,7 @@
 import { guarded, readJson } from "@/lib/http";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { addMessage, getActions } from "@/lib/chat";
+import { userMessage } from "@/lib/errors";
 import { declineAction, executeAction } from "@/lib/sal/tools";
 
 export const POST = guarded("actions/[id] POST", async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -23,6 +24,6 @@ export const POST = guarded("actions/[id] POST", async function POST(req: Reques
     return Response.json({ ok: true, action: getActions([id], user.id)[0], changed: [] });
   } catch (e) {
     // e.g. it was already handled on another phone: send back its current state so the card catches up
-    return Response.json({ error: (e as Error).message, action: getActions([id], user.id)[0] }, { status: 400 });
+    return Response.json({ error: userMessage(e, "That didn't work. Try again.", "actions"), action: getActions([id], user.id)[0] }, { status: 400 });
   }
 });

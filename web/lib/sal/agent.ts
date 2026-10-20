@@ -13,7 +13,7 @@ import { runTool, TOOL_LABELS, TOOLS, type ToolContext } from "./tools";
 export type SalEvent =
   | { type: "status"; label: string }
   | { type: "text"; delta: string }
-  | { type: "done"; messageId: number; text: string; chips: string[]; actions: ActionView[]; changed: string[]; remembered: string[] }
+  | { type: "done"; messageId: number; text: string; chips: string[]; actions: ActionView[]; changed: string[]; remembered: string[]; stopped?: boolean }
   | { type: "error"; message: string; retryable: boolean };
 
 const MAX_STEPS = 8;
@@ -56,20 +56,30 @@ export async function* runTurn(user: User, signal?: AbortSignal, stopped?: Abort
     if (pending) {
       yield { type: "status", label: "Looking at your photo" };
       const notes: string[] = [];
+      let allRead = true;
       for (const id of pending.payload.attachments ?? []) {
         const url = imageDataUrl(id, user.id);
-        notes.push(
-          url
-            ? await describePhoto(url, pending.text, signal).catch((e) => {
-                console.warn("[vision]", e);
-                return "(couldn't make out this photo)";
-              })
-            : "(photo missing)",
-        );
+        if (!url) {
+          notes.push("(photo missing)");
+          continue;
+        }
+        try {
+          notes.push(await describePhoto(url, pending.text, signal));
+        } catch (e) {
+          // a stop or the turn's deadline ends the turn; it isn't the photo's fault
+          signal?.throwIfAborted();
+          console.warn("[vision]", e);
+          notes.push("(couldn't make out this photo this time)");
+          allRead = false;
+        }
       }
-      updatePayload(pending.id, { ...pending.payload, photoNotes: notes });
+      // keep the descriptions only when every photo was read, so a hiccup gets another try next turn
+      if (allRead) updatePayload(pending.id, { ...pending.payload, photoNotes: notes });
     }
-    const feedback = await recentFeedbackLines().catch(() => []);
+    const feedback = await recentFeedbackLines().catch((e) => {
+      console.warn("[chat] couldn't read recent dinners:", e);
+      return [];
+    });
     for (let step = 0; step < MAX_STEPS; step++) {
       const week = await getWeek();
       const stream = await llm().chat.completions.create(
@@ -173,7 +183,7 @@ export async function* runTurn(user: User, signal?: AbortSignal, stopped?: Abort
       const last = partial.trim() ? `${partial.trim()} …` : "(stopped before finishing)";
       const shown = [...said, last].join("\n\n");
       const messageId = addMessage(user.id, "assistant", last, { actions: ctx.actions, display: shown, remembered: ctx.remembered, stopped: true });
-      yield { type: "done", messageId, text: shown, chips: [], actions: getActions(ctx.actions, user.id), changed: [...ctx.changed], remembered: ctx.remembered };
+      yield { type: "done", messageId, text: shown, chips: [], actions: getActions(ctx.actions, user.id), changed: [...ctx.changed], remembered: ctx.remembered, stopped: true };
       return;
     }
     console.error(`[chat] turn for user ${user.id} failed:`, e);

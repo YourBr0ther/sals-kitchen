@@ -1,4 +1,5 @@
 import { logActivity } from "./activity";
+import { UserError, userMessage } from "./errors";
 import { getDb, type User } from "./db";
 import { addDays, localDate, shortDate, weekday, weekStart, zonedTime } from "./dates";
 import { addTimelineEvent, markMade, rateRecipe } from "./mealie";
@@ -42,7 +43,8 @@ async function recentDinners(days = 7): Promise<Night[]> {
   // tonight's dinner counts once the evening is mostly over
   const lastDay = Date.now() >= zonedTime(today, 20).getTime() ? today : addDays(today, -1);
   const first = addDays(today, -days);
-  const weeks = [...new Set([weekStart(first), weekStart(lastDay)])];
+  const weeks: string[] = [];
+  for (let w = weekStart(first); w <= lastDay; w = addDays(w, 7)) weeks.push(w);
   const nights = (await Promise.all(weeks.map((w) => getWeek(w)))).flatMap((w) => w.nights);
   return nights.filter((n) => n.date >= first && n.date <= lastDay && n.cooking && n.title).reverse();
 }
@@ -77,7 +79,7 @@ export async function recordFeedback(
 ): Promise<{ title: string; warning?: string }> {
   const d = getDb();
   const night = (await getWeek(weekStart(date))).nights.find((n) => n.date === date);
-  if (!night?.title) throw new Error("Nothing was planned that night.");
+  if (!night?.title) throw new UserError("Nothing was planned that night.");
   const note = comment?.trim().slice(0, 300) || null;
   d.prepare(
     `insert into feedback (date, user_id, verdict, comment) values (?, ?, ?, ?)
@@ -90,7 +92,15 @@ export async function recordFeedback(
   try {
     if (verdict !== "skipped") {
       const claimed = d.prepare("update nights set marked_made = 1 where date = ? and marked_made = 0").run(date);
-      if (claimed.changes) await markMade(night.recipeSlug, when);
+      if (claimed.changes) {
+        try {
+          await markMade(night.recipeSlug, when);
+        } catch (e) {
+          // let the next answer try again
+          d.prepare("update nights set marked_made = 0 where date = ?").run(date);
+          throw e;
+        }
+      }
       const everyone = feedbackFor([date]).map((f) => STARS[f.verdict]).filter((n): n is number => n != null);
       if (everyone.length) await rateRecipe(night.recipeSlug, Math.round(everyone.reduce((a, b) => a + b, 0) / everyone.length));
       if (night.recipeId) {
@@ -100,6 +110,6 @@ export async function recordFeedback(
     return { title: night.title };
   } catch (e) {
     console.warn(`[feedback] Mealie update for ${date} failed:`, e);
-    return { title: night.title, warning: `Saved here, but Mealie didn't take it: ${(e as Error).message}` };
+    return { title: night.title, warning: `Saved here, but Mealie didn't take it: ${userMessage(e, "something went wrong on the way.", "feedback")}` };
   }
 }

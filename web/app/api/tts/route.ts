@@ -7,6 +7,7 @@ import type { NextRequest } from "next/server";
 import { guarded } from "@/lib/http";
 
 const MAX_CHARS = 3000;
+const MIN_AUDIO_BYTES = 2000;
 
 /** Markdown and links read badly out loud: keep the words, drop the punctuation around them. */
 function speakable(md: string): string {
@@ -37,7 +38,11 @@ export const GET = guarded("tts GET", async function GET(req: NextRequest) {
   const dir = path.join(config.dataDir, "tts");
   const file = path.join(dir, `${id}.mp3`);
   const headers = { "Content-Type": "audio/mpeg", "Cache-Control": "private, max-age=86400" };
-  if (fs.existsSync(file)) return new Response(fs.readFileSync(file), { headers });
+  // anything this small is a broken earlier attempt, not speech
+  if (fs.existsSync(file)) {
+    if (fs.statSync(file).size >= MIN_AUDIO_BYTES) return new Response(fs.readFileSync(file), { headers });
+    fs.rmSync(file, { force: true });
+  }
 
   const text = speakable((JSON.parse(row.payload) as { display?: string }).display ?? row.content);
   if (!text) return Response.json({ error: "Nothing to read out." }, { status: 400 });
@@ -57,7 +62,8 @@ export const GET = guarded("tts GET", async function GET(req: NextRequest) {
     console.error("[tts]", e);
     return null;
   });
-  if (!res?.ok || !res.body) {
+  const type = res?.headers.get("content-type") ?? "";
+  if (!res?.ok || !res.body || !type.startsWith("audio/")) {
     if (res) console.error(`[tts] service answered ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
     return Response.json({ error: "Sal's voice isn't working right now." }, { status: 502 });
   }
@@ -68,11 +74,15 @@ export const GET = guarded("tts GET", async function GET(req: NextRequest) {
     try {
       const reader = toDisk.getReader();
       for (let r = await reader.read(); !r.done; r = await reader.read()) chunks.push(r.value);
+      const audio = Buffer.concat(chunks);
+      if (audio.length < MIN_AUDIO_BYTES) return;
+      // written whole and then moved into place, so a half-written file is never served
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(file, Buffer.concat(chunks));
+      fs.writeFileSync(`${file}.part`, audio);
+      fs.renameSync(`${file}.part`, file);
     } catch (e) {
       console.warn(`[tts] didn't keep audio for message ${id}:`, (e as Error).message);
     }
   })();
-  return new Response(toPhone, { headers: { ...headers, "Content-Type": res.headers.get("content-type") || "audio/mpeg" } });
+  return new Response(toPhone, { headers: { ...headers, "Content-Type": type } });
 });

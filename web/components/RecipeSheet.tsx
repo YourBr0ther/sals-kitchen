@@ -111,6 +111,25 @@ function useTimers() {
     beep(audio.current);
   }, []);
 
+  // a locked or backgrounded phone holds timeouts back; on return, ring anything already up
+  const timersRef = useRef(timers);
+  useEffect(() => {
+    timersRef.current = timers;
+  }, [timers]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const t of timersRef.current) {
+        if (!t.done && t.endsAt <= Date.now() && handles.current.has(t.id)) {
+          clearTimeout(handles.current.get(t.id));
+          finish(t.id);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [finish]);
+
   function start(key: string, label: string, seconds: number) {
     if (timers.some((t) => t.key === key && !t.done)) return;
     // iOS only plays sound from a context first started during a tap, so start it now
@@ -285,6 +304,7 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
           ))}
         </ul>
       )}
+      {timers.some((t) => !t.done) && <p className="rs-wake-note">Timers run while this card is open. Turn on Keep screen on so the phone doesn&apos;t lock.</p>}
       <p className="sr-only" aria-live="assertive">
         {timers.filter((t) => t.done).map((t) => `${t.label} timer is done.`).join(" ")}
       </p>

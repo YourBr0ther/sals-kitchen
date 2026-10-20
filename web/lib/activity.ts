@@ -10,9 +10,16 @@ export interface Activity {
 
 /** Note something one person did that the rest of the household should see ("planned Tue: Tacos"). */
 export function logActivity(userId: number | null, text: string) {
-  getDb().prepare("insert into activity (user_id, text) values (?, ?)").run(userId, text.slice(0, 300));
-  // the log is a recent-history feed, not an archive
-  getDb().prepare("delete from activity where id <= (select max(id) from activity) - 500").run();
+  // the log is a nicety; it must never turn a finished action into a failed one
+  try {
+    // names can come from web pages: one line, no control characters
+    const clean = text.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 300);
+    getDb().prepare("insert into activity (user_id, text) values (?, ?)").run(userId, clean);
+    // a recent-history feed, not an archive
+    getDb().prepare("delete from activity where id <= (select max(id) from activity) - 500").run();
+  } catch (e) {
+    console.warn("[activity] couldn't log:", e);
+  }
 }
 
 export function recentActivity(limit = 20): Activity[] {

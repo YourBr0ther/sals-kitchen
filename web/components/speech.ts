@@ -79,20 +79,26 @@ export function useSpeaker() {
         fellBack = true;
         // the phone's built-in voice is better than silence
         if (typeof speechSynthesis === "undefined") return done();
-        const u = new SpeechSynthesisUtterance(speakable(text));
+        const spoken = speakable(text);
+        const u = new SpeechSynthesisUtterance(spoken);
         u.rate = 0.95;
         u.onend = done;
         u.onerror = done;
         speechSynthesis.speak(u);
+        // some phones never report the end of built-in speech; don't leave the button stuck
+        setTimeout(done, 4000 + spoken.length * 90);
       };
+      const p = getPlayer();
+      p.onended = done;
+      // a stream that breaks partway ends there; starting over in another voice would repeat it
+      p.onerror = () => (p.currentTime > 0.5 ? done() : fallback());
       try {
         // the server streams the audio, so playback starts before the whole reply is spoken
-        const p = getPlayer();
-        p.onended = done;
-        p.onerror = fallback;
         p.src = `/api/tts?id=${id}`;
         await p.play();
-      } catch {
+      } catch (e) {
+        // the phone refused to play without a tap; built-in speech would be refused too
+        if ((e as Error).name === "NotAllowedError") return done();
         fallback();
       }
     },

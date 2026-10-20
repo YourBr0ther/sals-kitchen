@@ -2,6 +2,7 @@ import { currentUser, unauthorized } from "@/lib/auth";
 import { addMessage } from "@/lib/chat";
 import { isDate, weekday } from "@/lib/dates";
 import { nextToAsk, recordFeedback, VERDICT_WORDS, VERDICTS, type Verdict } from "@/lib/feedback";
+import { userMessage } from "@/lib/errors";
 import { guarded, readJson } from "@/lib/http";
 
 /** The dinner to ask this person about, if any. */
@@ -24,10 +25,12 @@ export const POST = guarded("feedback POST", async function POST(req: Request) {
     const r = await recordFeedback(user, date, verdict as Verdict);
     let event: number | null = null;
     if (verdict !== "dismissed") {
-      event = addMessage(user.id, "event", `${user.name} said ${weekday(date, "long")}'s ${r.title}: ${VERDICT_WORDS[verdict as Verdict]}.`);
+      // Sal relays any Mealie trouble, since the chat moves on right after this
+      const trouble = r.warning ? ` ${r.warning}` : "";
+      event = addMessage(user.id, "event", `${user.name} said ${weekday(date, "long")}'s ${r.title}: ${VERDICT_WORDS[verdict as Verdict]}.${trouble}`);
     }
     return Response.json({ ok: true, event, warning: r.warning ?? null });
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 400 });
+    return Response.json({ error: userMessage(e, "Couldn't save that. Try again.", "feedback POST") }, { status: 400 });
   }
 });

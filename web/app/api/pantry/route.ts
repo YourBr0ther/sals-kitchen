@@ -15,6 +15,6 @@ export const PATCH = guarded("pantry PATCH", async function PATCH(req: Request) 
   const parsed = await readJson<{ add?: unknown; remove?: unknown }>(req);
   if (!parsed.ok) return parsed.response;
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 30) : []);
-  changePantry(user.id, strings(parsed.data.add), strings(parsed.data.remove));
-  return Response.json({ items: listPantry() });
+  const r = changePantry(user.id, strings(parsed.data.add), strings(parsed.data.remove));
+  return Response.json({ items: listPantry(), full: r.full });
 });

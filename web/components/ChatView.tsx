@@ -7,7 +7,7 @@ import type { Settings } from "@/lib/settings";
 import Composer from "./Composer";
 import { ClockIcon, XIcon } from "./icons";
 import { MessageList, SalText } from "./Messages";
-import { useSpeaker } from "./speech";
+import { unlockAudio, useSpeaker } from "./speech";
 import { jsonInit } from "./util";
 
 type Streaming = { text: string; status: string | null };
@@ -94,7 +94,9 @@ export default function ChatView({
       setMessages(data.messages);
       setHasPast(data.hasPast);
       setWaiting(data.busy);
-      if (data.busy) {
+      // an approved request still running (a long grocery list, say): check back until it lands
+      const working = data.messages.some((m) => m.actions?.some((a) => a.status === "running"));
+      if (data.busy || working) {
         wasWaiting.current = true;
         pollTimer.current = setTimeout(() => again.current(), POLL_MS);
         return;
@@ -177,6 +179,8 @@ export default function ChatView({
       if (sendingRef.current) return false;
       sendingRef.current = true;
       stopSpeaking();
+      // sends start from a tap; that tap is what lets an iPhone play the reply out loud later
+      unlockAudio();
       clearTimeout(pollTimer.current);
       setWaiting(false);
       setProblem(null);
@@ -256,7 +260,7 @@ export default function ChatView({
               ]);
               if (ev.changed?.length) onChanged(ev.changed);
               const mode = readAloudRef.current;
-              if (mode === "always" || (mode === "voice" && voice)) void speak(ev.messageId, ev.text);
+              if (!ev.stopped && (mode === "always" || (mode === "voice" && voice))) void speak(ev.messageId, ev.text);
             }
           }
         }
@@ -284,7 +288,15 @@ export default function ChatView({
 
   async function stopSal() {
     try {
-      await fetch("/api/chat/stop", { method: "POST" });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await fetch("/api/chat/stop", { method: "POST" });
+        const r = (await res.json().catch(() => ({}))) as { stopped?: boolean };
+        if (res.ok && r.stopped) return;
+        // a tap right after sending can land before the server has started the reply
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        if (!sendingRef.current) return;
+      }
+      setProblem({ message: "Couldn't stop him that time. He'll finish in a moment.", retry: false });
     } catch {
       setProblem({ message: "Couldn't reach the kitchen to stop him. Check your connection.", retry: false });
     }
@@ -302,12 +314,13 @@ export default function ChatView({
       }
       setAsk(null);
       onChanged(["week"]);
-      if (r.warning) setProblem({ message: r.warning, retry: false });
       // Sal hears about it and answers; the event shows up in the chat with his reply
       if (r.event) {
         await resync();
-        void send("", [], false, true);
+        await send("", [], false, true);
       }
+      // shown after his reply, since sending clears problems
+      if (r.warning) setProblem({ message: r.warning, retry: false });
       void loadAsk();
     } catch {
       setProblem({ message: "Couldn't reach the kitchen. Check your connection and tap again.", retry: false });
@@ -327,7 +340,7 @@ export default function ChatView({
     try {
       const res = await fetch(`/api/actions/${action.id}`, jsonInit("POST", { approve }));
       if (res.status === 401) return window.location.assign("/login");
-      const r = (await res.json().catch(() => ({}))) as { action?: ActionView; changed?: string[]; error?: string };
+      const r = (await res.json().catch(() => ({}))) as { action?: ActionView; changed?: string[]; error?: string; partial?: boolean };
       if (r.action) {
         setMessages((ms) =>
           (ms ?? []).map((m) => (m.actions ? { ...m, actions: m.actions.map((a) => (a.id === action.id ? r.action! : a)) } : m)),
@@ -337,10 +350,12 @@ export default function ChatView({
         void resync(); // e.g. someone already handled it on another phone
       }
       if (r.changed?.length) onChanged(r.changed);
-      // let Sal react when a save fails, so the person isn't left looking at an error
-      if (r.action?.status === "failed") void send("", [], false, true);
+      // let Sal react when it fails or only partly works, so the person hears what's left to do
+      if (r.action?.status === "failed" || r.partial) void send("", [], false, true);
     } catch {
       setProblem({ message: "Couldn't reach the kitchen. Check your connection and tap again.", retry: false });
+      // it may still be running on the server; the chat checks back until it finishes
+      void resync();
     } finally {
       setDeciding(null);
     }

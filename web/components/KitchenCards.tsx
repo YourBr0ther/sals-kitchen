@@ -26,12 +26,17 @@ export function PantryCard({ version }: { version: number }) {
     return () => clearTimeout(t);
   }, [load, version]);
 
-  async function change(body: { add?: string[]; remove?: string[] }) {
+  /** Resolves true when the change went through, so a typed draft is only cleared then. */
+  async function change(body: { add?: string[]; remove?: string[] }): Promise<boolean> {
     try {
       setError("");
-      setItems((await api<{ items: PantryItem[] }>("/api/pantry", jsonInit("PATCH", body))).items);
+      const r = await api<{ items: PantryItem[]; full?: boolean }>("/api/pantry", jsonInit("PATCH", body));
+      setItems(r.items);
+      if (r.full) setError("The kitchen list is full (150 things). Take some off first.");
+      return !r.full;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     }
   }
 
@@ -54,8 +59,7 @@ export function PantryCard({ version }: { version: number }) {
         onSubmit={(e) => {
           e.preventDefault();
           const add = draft.split(",").map((s) => s.trim()).filter(Boolean);
-          if (add.length) void change({ add });
-          setDraft("");
+          if (add.length) void change({ add }).then((ok) => ok && setDraft(""));
         }}
       >
         <input aria-label="Add something you have" placeholder="Add something you have" value={draft} onChange={(e) => setDraft(e.target.value)} enterKeyHint="done" />

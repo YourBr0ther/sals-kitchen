@@ -1,9 +1,17 @@
 import { config, mealieConfigured } from "./config";
+import { UserError } from "./errors";
 import { decodeEntities } from "./html";
 import { type Recipe, toSchemaJson } from "./recipe";
 import { fetchImage } from "./web";
 
-export class MealieError extends Error {}
+export class MealieError extends UserError {
+  constructor(
+    message: string,
+    readonly status = 0,
+  ) {
+    super(message);
+  }
+}
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!mealieConfigured()) throw new MealieError("Mealie isn't connected. Set MEALIE_URL and MEALIE_API_TOKEN.");
@@ -29,10 +37,10 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     console.warn(`[mealie] ${init.method ?? "GET"} ${path} -> ${res.status}: ${body.slice(0, 500)}`);
-    if (res.status === 404) throw new MealieError("Mealie couldn't find that recipe or plan.");
-    if (res.status === 400 || res.status === 422) throw new MealieError("Mealie didn't accept that. The recipe data may be incomplete.");
+    if (res.status === 404) throw new MealieError("Mealie couldn't find that. It may have been deleted there.", 404);
+    if (res.status === 400 || res.status === 422) throw new MealieError("Mealie didn't accept that. Try again, and if it keeps happening, something on Mealie's side changed.");
     if (res.status >= 500) throw new MealieError("Mealie hit an error on its end. Try again in a minute.");
-    throw new MealieError(`Mealie said no (${res.status}).`);
+    throw new MealieError("Mealie turned that down.");
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -258,7 +266,10 @@ export async function getRecipeImage(slug: string): Promise<{ body: ReadableStre
     const res = await fetch(`${config.mealie.url}/api/media/recipes/${id}/images/${file}`, {
       headers: { Authorization: `Bearer ${config.mealie.token}` },
       signal: AbortSignal.timeout(30_000),
-    }).catch(() => null);
+    }).catch((e) => {
+      console.warn(`[mealie] photo for ${slug}:`, (e as Error).message);
+      return null;
+    });
     if (res?.ok && res.body) return { body: res.body, type: res.headers.get("content-type") || "image/webp" };
     await res?.body?.cancel().catch(() => {});
   }
@@ -379,8 +390,8 @@ export async function deleteMealPlan(id: string | number) {
   try {
     await call(`/api/households/mealplans/${id}`, { method: "DELETE" });
   } catch (e) {
-    // already gone is fine
-    if (!(e instanceof MealieError && e.message.includes("(404)"))) throw e;
+    // already gone (someone deleted it in Mealie) is fine
+    if (!(e instanceof MealieError && e.status === 404)) throw e;
   }
 }
 
@@ -474,7 +485,7 @@ export async function getShoppingList(id: string): Promise<{ name: string; items
     const l = await call<{ name: string; listItems?: (ShoppingItem & { display?: string })[] }>(`/api/households/shopping/lists/${encodeURIComponent(id)}`);
     return { name: l.name, items: (l.listItems ?? []).map((i) => ({ id: i.id, note: i.note || i.display || "", checked: i.checked, labelId: i.labelId })) };
   } catch (e) {
-    if (e instanceof MealieError && e.message.includes("couldn't find")) return null;
+    if (e instanceof MealieError && e.status === 404) return null;
     throw e;
   }
 }

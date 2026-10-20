@@ -87,13 +87,15 @@ function Household({ me }: { me: User }) {
   const [role, setRole] = useState<"adult" | "kid">("kid");
   const [pin, setPin] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setMembers((await api<{ members: User[] }>("/api/household")).members);
+      setLoadError("");
     } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message });
+      setLoadError((e as Error).message);
     }
   }, []);
   useEffect(() => {
@@ -118,6 +120,11 @@ function Household({ me }: { me: User }) {
 
   return (
     <>
+      {loadError && (
+        <p className="error-line" role="alert">
+          {loadError} <button className="ghost" onClick={() => void load()}>Try again</button>
+        </p>
+      )}
       <ul className="members">
         {members?.map((m) => (
           <li key={m.id}>
@@ -150,10 +157,14 @@ function Household({ me }: { me: User }) {
 export default function SettingsView({
   me,
   settings,
+  loadError,
+  onRetry,
   onSettings,
 }: {
   me: User;
   settings: Settings | null;
+  loadError: string;
+  onRetry: () => void;
   onSettings: (change: Partial<Settings>) => void;
 }) {
   const [theme, setTheme] = useState<Theme>("system");
@@ -174,6 +185,13 @@ export default function SettingsView({
       <div className="set-group">
         <h3>Sal&apos;s voice</h3>
         <p className="none">Tap the speaker next to any reply to hear it. Sal can also read replies out on his own.</p>
+        {!settings && loadError ? (
+          <p className="error-line" role="alert">
+            Couldn&apos;t load your settings. {loadError} <button className="ghost" onClick={onRetry}>Try again</button>
+          </p>
+        ) : !settings ? (
+          <p className="none">Loading…</p>
+        ) : (
         <Choice
           name="Read replies out loud"
           value={settings?.readAloud ?? "voice"}
@@ -184,6 +202,7 @@ export default function SettingsView({
             { value: "always", label: "Always" },
           ]}
         />
+        )}
       </div>
 
       <div className="set-group">

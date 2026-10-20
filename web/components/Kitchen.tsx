@@ -35,6 +35,7 @@ export default function Kitchen({ me }: { me: User }) {
   const [showIosHelp, setShowIosHelp] = useState(false);
   const [recipe, setRecipe] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsError, setSettingsError] = useState("");
   // bumped when something may have changed the kitchen list or the household log
   const [kitchenVersion, setKitchenVersion] = useState(0);
   const online = useOnline();
@@ -46,6 +47,15 @@ export default function Kitchen({ me }: { me: User }) {
       setWeekError("");
     } catch (e) {
       setWeekError((e as Error).message);
+    }
+  }, []);
+  const loadSettings = useCallback(async () => {
+    try {
+      setSettings(await api<Settings>("/api/settings"));
+      setSettingsError("");
+    } catch (e) {
+      console.warn("[settings] couldn't load:", e);
+      setSettingsError((e as Error).message);
     }
   }, []);
   const loadProfiles = useCallback(async () => {
@@ -73,15 +83,13 @@ export default function Kitchen({ me }: { me: User }) {
   useEffect(() => {
     const t = setTimeout(() => {
       void loadProfiles();
-      api<Settings>("/api/settings")
-        .then(setSettings)
-        .catch(() => null);
+      void loadSettings();
       api<{ mealie: { connected: boolean; recipes?: number } }>("/api/status")
         .then((s) => setMealie(s.mealie))
         .catch(() => setMealie({ connected: false }));
     }, 0);
     return () => clearTimeout(t);
-  }, [loadProfiles]);
+  }, [loadProfiles, loadSettings]);
 
   // back in the app after a while: the week may have changed on someone else's phone
   useEffect(() => {
@@ -133,12 +141,14 @@ export default function Kitchen({ me }: { me: User }) {
   }
 
   async function changeSettings(change: Partial<Settings>) {
-    // show it right away; the server's answer is the truth
+    // show it right away; the server's answer is the truth, and a failure puts it back
+    const before = settings;
     setSettings((cur) => (cur ? { ...cur, ...change } : cur));
     try {
       setSettings(await api<Settings>("/api/settings", jsonInit("PATCH", change)));
     } catch (e) {
-      setNotice((e as Error).message);
+      setSettings(before);
+      setNotice(`Didn't save that: ${(e as Error).message}`);
     }
   }
 
@@ -217,7 +227,8 @@ export default function Kitchen({ me }: { me: User }) {
             onBusy={setChatBusy}
             onOpenRecipe={setRecipe}
             onShowPast={() => switchTab("past")}
-            readAloud={settings?.readAloud ?? "voice"}
+            // until settings load, don't talk unasked
+            readAloud={settings?.readAloud ?? "off"}
           />
         </div>
         <div className="view" hidden={tab !== "profiles"}>
@@ -225,7 +236,7 @@ export default function Kitchen({ me }: { me: User }) {
         </div>
         {tab === "settings" && (
           <div className="view">
-            <SettingsView me={me} settings={settings} onSettings={(c) => void changeSettings(c)} />
+            <SettingsView me={me} settings={settings} loadError={settingsError} onRetry={() => void loadSettings()} onSettings={(c) => void changeSettings(c)} />
           </div>
         )}
         {tab === "past" && (
