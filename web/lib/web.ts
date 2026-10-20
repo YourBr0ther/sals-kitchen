@@ -168,3 +168,61 @@ export async function readPage(url: string) {
   ).trim();
   return { url, kind: "page" as const, title, text: text.slice(0, 6000) };
 }
+
+const MEDIA_KEYS = new Set(["image", "thumbnailUrl", "video", "contentUrl", "embedUrl", "logo", "photo"]);
+
+/** Deep copy without any field that would make Mealie download something. */
+function stripMedia(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(stripMedia);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v as Json).filter(([k]) => !MEDIA_KEYS.has(k)).map(([k, x]) => [k, stripMedia(x)]));
+  }
+  return v;
+}
+
+function firstImageUrl(v: unknown): string | null {
+  if (!v) return null;
+  if (typeof v === "string") return v;
+  if (Array.isArray(v)) return firstImageUrl(v[0]);
+  const o = v as Json;
+  return typeof o.url === "string" ? o.url : typeof o.contentUrl === "string" ? o.contentUrl : null;
+}
+
+/**
+ * Fetch a recipe page ourselves (public addresses only) and pull out its schema.org Recipe.
+ * Mealie gets the data with every media URL removed, so it never fetches anything on its own.
+ */
+export async function fetchRecipeData(url: string): Promise<{ recipe: Json; imageUrl: string | null }> {
+  const html = await fetchText(url);
+  for (const m of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const recipe = findRecipe(JSON.parse(m[1]));
+      if (recipe) {
+        const img = firstImageUrl(recipe.image);
+        return { recipe: stripMedia(recipe) as Json, imageUrl: img ? new URL(img, url).toString() : null };
+      }
+    } catch {
+      // try the next block
+    }
+  }
+  throw new Error("That page doesn't have a recipe Mealie can read.");
+}
+
+const IMAGE_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+
+/** Download a recipe photo through the public-only connection. */
+export async function fetchImage(raw: string): Promise<{ bytes: Buffer; ext: string } | null> {
+  let url = await assertPublicUrl(raw);
+  for (let hop = 0; hop < 5; hop++) {
+    const res = await undiciFetch(url, { dispatcher: publicOnly, redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+      url = await assertPublicUrl(new URL(res.headers.get("location")!, url).toString());
+      continue;
+    }
+    const ext = IMAGE_TYPES[(res.headers.get("content-type") ?? "").split(";")[0].trim()];
+    if (!res.ok || !ext) return null;
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return bytes.length <= 8_000_000 ? { bytes, ext } : null;
+  }
+  return null;
+}

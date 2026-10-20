@@ -235,7 +235,7 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return readPage(String(args.url));
     case "import_recipe_url": {
       const url = String(args.url ?? "");
-      // Mealie fetches this from inside the network, so hold it to the same rule as the link reader
+      // early, friendly failure; the import itself fetches through the public-only connection
       let host: string;
       try {
         host = (await assertPublicUrl(url)).hostname;
@@ -284,7 +284,6 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
     let message: string;
     const changed: ("week" | "profiles")[] = [];
     if (a.kind === "import_recipe_url") {
-      await assertPublicUrl(args.url); // DNS may have changed since Sal asked
       const r = await importRecipeFromUrl(args.url);
       message = `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
       if (args.planFor) {

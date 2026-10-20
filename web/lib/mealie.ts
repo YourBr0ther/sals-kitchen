@@ -1,4 +1,5 @@
 import { config, mealieConfigured } from "./config";
+import { fetchImage, fetchRecipeData } from "./web";
 
 export class MealieError extends Error {}
 
@@ -90,11 +91,32 @@ export async function getRecipe(slug: string) {
   };
 }
 
+/**
+ * Save a web recipe. The page is fetched by this app, not Mealie, so a link can't
+ * steer Mealie into the home network: Mealie only ever sees the recipe data.
+ */
 export async function importRecipeFromUrl(url: string): Promise<RecipeSummary> {
-  const slug = await call<string>("/api/recipes/create/url", {
+  const { recipe, imageUrl } = await fetchRecipeData(url);
+  const slug = await call<string>("/api/recipes/create/html-or-json", {
     method: "POST",
-    body: JSON.stringify({ url, includeTags: true, includeCategories: true }),
+    // Mealie only accepts the JSON with a schema.org context; it may have lived on a parent @graph
+    body: JSON.stringify({ data: JSON.stringify({ "@context": "https://schema.org", ...recipe }), includeTags: true, includeCategories: true }),
   });
+  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ orgURL: url }) }).catch(() => {});
+  if (imageUrl) {
+    const img = await fetchImage(imageUrl).catch(() => null);
+    if (img) {
+      const form = new FormData();
+      form.set("image", new Blob([new Uint8Array(img.bytes)]), `image.${img.ext}`);
+      form.set("extension", img.ext);
+      await fetch(`${config.mealie.url}/api/recipes/${encodeURIComponent(slug)}/image`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${config.mealie.token}` },
+        body: form,
+        signal: AbortSignal.timeout(30_000),
+      }).catch(() => {});
+    }
+  }
   const r = await call<RawRecipe>(`/api/recipes/${encodeURIComponent(slug)}`);
   return summarize(r);
 }
