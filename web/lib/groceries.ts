@@ -19,9 +19,10 @@ Answer with one JSON object and nothing else:
 Rules:
 - Scale every recipe from its own servings to the number of people eating. When a recipe's servings are unknown, assume it already feeds the family. Follow each night's note ("double it for lunches").
 - Combine the same ingredient across recipes into one item with the total amount ("2 lemons" + "1 lemon" = "3 lemons"; "1 cup + 2 tbsp butter" can become "1 1/4 cups butter").
-- Write amounts the way you'd buy them: whole onions, a bunch of cilantro, a 28 oz can of tomatoes, "1.5 lb chicken thighs". Round up to what a store sells.
-- Keep each item short: amount first, then the ingredient, plus a key detail only when it matters for buying (boneless, low-sodium).
-- Leave off staples and anything the family says is already in the kitchen; list those names in leftOff instead. If a recipe needs a lot of a staple (2 cups of olive oil), keep it on the list.
+- Write amounts the way you'd buy them, rounded up to what a store sells: whole onions and lemons (2.25 lemons is 3 lemons), a bunch of cilantro, a 28 oz can of tomatoes, "1.5 lb chicken thighs", "1 lb ground chicken" (not 3/4 lb), a dozen eggs, a wedge of Parmesan, a pint of heavy cream. Never cups, tablespoons, or teaspoons for something sold in a package; spices and condiments are just "chili powder" or "1 jar salsa".
+- Keep each item short and lowercase except names (Parmesan): amount first, then the ingredient, plus a key detail only when it matters for buying (boneless, low-sodium).
+- Leave off staples and anything the family says is already in the kitchen; list in leftOff only the ones these recipes use. If a recipe needs a lot of a staple (2 cups of olive oil), keep it on the list.
+- Leave off anything already bought (checked off on the list), whatever it's called there ("3 yellow onions" bought covers the onions).
 - "for" lists the short day names of the dinners that use it.
 - aisle is exactly one of: ${AISLES.join(", ")}.
 - Order the items by aisle in that order.`;
@@ -55,6 +56,25 @@ const core = (s: string) =>
     .replace(/\b(cups?|tbsps?|tablespoons?|tsps?|teaspoons?|lbs?|pounds?|oz|ounces?|g|kg|ml|cans?|bunch(es)?|heads?|cloves?|packages?|large|medium|small|about)\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const FRACTIONS: Record<string, number> = { "½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3, "⅛": 0.125 };
+// sold by weight or volume, so "1.5 lb" is a fine thing to ask for at the counter
+const MEASURED = /^(lbs?|pounds?|oz|ounces?|kg|g|grams?|cups?|pints?|quarts?|gallons?|liters?|l|ml)\b/i;
+
+/** "2.25 lemons" or "1 1/2 onions" is a whole number of them at the store: "3 lemons", "2 onions". */
+function wholeCount(text: string): string {
+  const m = text.match(/^(\d+(?:\.\d+)?(?:\s+\d+\/\d+|\s*[½¼¾⅓⅔⅛])?|\d+\/\d+|[½¼¾⅓⅔⅛])\s+(.*)$/);
+  if (!m || MEASURED.test(m[2])) return text;
+  const n = m[1]
+    .trim()
+    .split(/\s+|(?=[½¼¾⅓⅔⅛])/)
+    .reduce((sum, part) => {
+      if (FRACTIONS[part]) return sum + FRACTIONS[part];
+      const [a, b] = part.split("/").map(Number);
+      return sum + (b ? a / b : a);
+    }, 0);
+  return Number.isInteger(n) || !n ? text : `${Math.ceil(n)} ${m[2]}`;
+}
 
 /** What's planned this week, with each dinner's ingredients from Mealie or its web page. */
 async function dishesFor(start: string): Promise<{ dishes: Dish[]; missing: string[] }> {
@@ -110,6 +130,11 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
   }
   const people = householdSize();
   const pantry = listPantry().map((p) => p.item);
+
+  const d = getDb();
+  const prevListId = (d.prepare("select list_id from grocery_lists where week_start = ?").get(start) as { list_id: string } | undefined)?.list_id;
+  // what's already bought, so the model doesn't put it back under another name
+  const bought = ((prevListId && (await getShoppingList(prevListId))) || { items: [] }).items.filter((i) => i.checked).map((i) => i.note);
   const menu = dishes
     .map(
       (d) =>
@@ -119,22 +144,39 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
   const t0 = Date.now();
   const out = await llmJson<{ items?: unknown; leftOff?: unknown }>(
     PROMPT,
-    `People eating: ${people}\nStaples: ${STAPLES}\nAlready in the kitchen: ${pantry.join(", ") || "(nothing listed)"}\n\n${menu}`,
+    `People eating: ${people}\nStaples: ${STAPLES}\nAlready in the kitchen: ${pantry.join(", ") || "(nothing listed)"}\nAlready bought: ${bought.join(", ") || "(nothing yet)"}\n\n${menu}`,
   );
+  const seen = new Set<string>();
   const items = (Array.isArray(out.items) ? out.items : [])
     .map((i) => i as { text?: unknown; aisle?: unknown; for?: unknown })
     .filter((i) => typeof i.text === "string" && i.text.trim())
+    // the same thing twice is one line too many
+    .filter((i) => {
+      const k = core(String(i.text));
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
     .slice(0, 120)
     .map((i) => {
       const days = Array.isArray(i.for) ? i.for.filter((x): x is string => typeof x === "string").slice(0, 7) : [];
       const aisle = AISLES.find((a) => a.toLowerCase() === String(i.aisle ?? "").toLowerCase()) ?? "Other";
-      return { text: `${String(i.text).trim().slice(0, 120)}${days.length ? ` (${days.join(", ")})` : ""}`, aisle };
+      return { text: `${wholeCount(String(i.text).trim()).slice(0, 120)}${days.length ? ` (${days.join(", ")})` : ""}`, aisle };
     });
   console.log(`[groceries] ${dishes.length} dinners -> ${items.length} items in ${Math.round((Date.now() - t0) / 1000)}s`);
   if (!items.length) throw new Error("Couldn't put a list together this time. Try again.");
-  const leftOff = (Array.isArray(out.leftOff) ? out.leftOff : []).filter((x): x is string => typeof x === "string").slice(0, 30);
+  // only staples these recipes call for; "left off: ice, water" says nothing
+  const used = dishes.flatMap((x) => x.ingredients).join("\n").toLowerCase();
+  const boughtCores = new Set(bought.map(core));
+  const leftOff = (Array.isArray(out.leftOff) ? out.leftOff : [])
+    .filter((x): x is string => typeof x === "string" && !!x.trim() && !boughtCores.has(core(x)))
+    .filter((x) => {
+      const last = x.trim().toLowerCase().split(/\s+/).pop()!.replace(/[^a-z]/g, "");
+      return !!last && new RegExp(`\\b${last}(e?s)?\\b`).test(used);
+    })
+    .slice(0, 30);
 
-  const d = getDb();
+  // read the list again: people may have checked things off while the model worked
   const name = `Groceries for ${weekday(start)} ${start.slice(5)} to ${weekday(addDays(start, 6))} ${addDays(start, 6).slice(5)}`;
   const prev = d.prepare("select list_id, item_ids from grocery_lists where week_start = ?").get(start) as
     | { list_id: string; item_ids: string }

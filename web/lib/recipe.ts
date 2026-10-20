@@ -132,7 +132,7 @@ function sectioned(v: unknown, max: number): { lines: string[]; headings: Headin
 // WP Recipe Maker's schema output wraps ingredient notes as "(, minced)"
 const tidyIngredient = (s: string) => s.replace(/\(\s*,\s*/g, "(");
 
-const SERVING_WORDS = /\b(servings?|serving\(s\)|serves|people|persons?|portions?)\b/i;
+const SERVING_WORDS = /\b(servings?|serving\(s\)|serves|feeds|people|persons?|portions?)\b/i;
 
 /**
  * Pages give yield as "4", "4 servings", ["4", "4 - 5 people"], or "1 loaf, 10 serving(s)".
@@ -269,21 +269,24 @@ const llm = () => (client ??= new OpenAI({ baseURL: config.llm.baseURL, apiKey: 
 const EXTRACT_PROMPT = `You pull recipes out of web page text for a recipe manager.
 Copy the recipe exactly as the page gives it. Never invent, complete, or improve anything.
 Answer with one JSON object and nothing else:
-{"found": true, "name": "...", "description": "one or two sentences from the page", "recipeYield": "4 servings" or null,
+{"found": true, "name": "...", "description": "one or two sentences from the text" or "", "recipeYield": "4 servings" or null,
  "servings": 4 or null, "prepTime": "PT15M" or null, "cookTime": "PT25M" or null, "totalTime": "PT40M" or null,
  "recipeIngredient": ["1 lb chicken thighs", ...], "recipeInstructions": ["Heat the oil...", ...],
  "nutrition": {"calories": "567", "fatContent": "31 g", "carbohydrateContent": "36 g", "proteinContent": "36 g"} or null,
  "notes": ["..."] or null}
-Times are ISO 8601 durations. Each ingredient is one line with its amount. Each instruction is one step.
-recipeYield is what the page says it makes ("1 9x13-inch lasagna", "28 cookies"); servings is the number of servings only if the page states it.
+description: only a sentence the text itself gives to describe the dish; "" if there is none. Never write one, and never use ratings, servings, or times as the description.
+Times are ISO 8601 durations. A single time that isn't labeled prep or cook ("Serves 4, 45 min") is the totalTime.
+name: the recipe's name without asides like "(So Easy!)".
+Each ingredient is one line with its amount. Each instruction is one step.
+recipeYield is what the page says it makes ("1 9x13-inch lasagna", "28 cookies"); servings is the number of servings only if the page states it ("serves 6", "feeds 6").
 If the page splits ingredients or steps into titled groups ("For the sauce:"), give that list as
 [{"section": "For the sauce", "items": ["...", ...]}, ...] instead, with the groups in page order.
 nutrition: only if the page lists nutrition facts, per serving, using the schema.org NutritionInformation names
 (calories, fatContent, saturatedFatContent, carbohydrateContent, sugarContent, fiberContent, proteinContent, cholesterolContent, sodiumContent).
 notes: only text the page labels as the recipe's notes or tips, one entry per note; otherwise null.
-If the text has no complete recipe (both an ingredient list and steps), answer {"found": false}.`;
+If the text has no complete recipe (both an ingredient list and steps), answer {"found": false, "reason": "what's missing, in a few plain words"}.`;
 
-async function fromPageText(excerpt: string, title: string, sourceUrl: string, pageImage: string | null): Promise<Recipe> {
+async function readRecipeText(excerpt: string, title: string, sourceUrl: string): Promise<Json | null> {
   const res = await llm().chat.completions.create({
     model: config.llm.model,
     temperature: 0,
@@ -298,29 +301,56 @@ async function fromPageText(excerpt: string, title: string, sourceUrl: string, p
     ],
   });
   const raw = res.choices[0]?.message?.content ?? "";
-  const json = raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1);
-  let data: Json;
   try {
-    data = JSON.parse(json);
+    return JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
   } catch {
-    // a garbled reply says nothing about the page; don't cache it as "no recipe"
-    throw new Error("Couldn't read the recipe off that page this time. Try again.");
+    return null;
   }
+}
+
+const isoMinutes = (iso: string | null) => {
+  const m = iso?.match(/^PT(?:(\d+)H)?(?:(\d+)M)?$/i);
+  return m && (m[1] || m[2]) ? Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) : null;
+};
+
+async function fromPageText(excerpt: string, title: string, sourceUrl: string, pageImage: string | null): Promise<Recipe> {
+  // the model now and then answers with broken JSON; one more try usually comes back clean
+  const data = (await readRecipeText(excerpt, title, sourceUrl)) ?? (await readRecipeText(excerpt, title, sourceUrl));
+  // a garbled reply says nothing about the page; don't cache it as "no recipe"
+  if (!data) throw new Error(`Couldn't read the recipe ${sourceUrl ? "off that page" : "from that"} this time. Try again.`);
   const ingredients = sectioned(data.recipeIngredient, 80);
   const steps = sectioned(data.recipeInstructions, 60);
   if (data.found === false || ingredients.lines.length < 2 || steps.lines.length < 1) {
-    throw new NoRecipeError("That page doesn't have a complete recipe (ingredients and steps).", title, excerpt.slice(0, 1500));
+    if (sourceUrl) throw new NoRecipeError("That page doesn't have a complete recipe (ingredients and steps).", title, excerpt.slice(0, 1500));
+    // from chat, say what's missing so the person knows what to send
+    const reason =
+      ingredients.lines.length >= 2 && !steps.lines.length
+        ? "it lists ingredients but no steps"
+        : steps.lines.length && ingredients.lines.length < 2
+          ? "it has steps but no ingredient list"
+          : typeof data.reason === "string" && data.reason.trim()
+            ? clean(data.reason).replace(/\.$/, "").replace(/^\p{Lu}(?=\p{Ll})/u, (c) => c.toLowerCase()).slice(0, 160)
+            : "there's no ingredient list and steps in it";
+    throw new NoRecipeError(`That isn't a whole recipe yet: ${reason}.`, title, excerpt.slice(0, 1500));
   }
   const servings = typeof data.servings === "number" && data.servings > 0 ? `${data.servings} servings` : null;
   const yieldText = typeof data.recipeYield === "string" ? data.recipeYield : null;
   const notes = texts(data.notes).filter((n) => n.length > 3);
+  const [prepTime, cookTime] = [isoOrNull(data.prepTime), isoOrNull(data.cookTime)];
+  // a card that gives prep and cook rarely adds them up; Mealie shows the total on its cards
+  const prepMin = isoMinutes(prepTime);
+  const cookMin = isoMinutes(cookTime);
+  const totalTime = isoOrNull(data.totalTime) ?? (prepMin != null && cookMin != null ? `PT${prepMin + cookMin}M` : null);
+  let name = clean(String(data.name ?? title)) || title;
+  // "mom's chili" typed in a text message reads better in the box as "Mom's Chili"
+  if (!sourceUrl && name === name.toLowerCase()) name = name.replace(/(^|\s)\p{L}/gu, (c) => c.toUpperCase());
   return {
-    name: clean(String(data.name ?? title)) || title,
+    name,
     description: clean(String(data.description ?? "")).slice(0, 1500),
     ...readYield([yieldText, servings].filter((s): s is string => !!s)),
-    prepTime: isoOrNull(data.prepTime),
-    cookTime: isoOrNull(data.cookTime),
-    totalTime: isoOrNull(data.totalTime),
+    prepTime,
+    cookTime,
+    totalTime,
     recipeIngredient: ingredients.lines,
     recipeInstructions: steps.lines,
     recipeCategory: [],
@@ -426,10 +456,8 @@ export function toSchemaJson(r: Recipe): Json {
   if (r.prepTime) out.prepTime = r.prepTime;
   if (r.cookTime) out.cookTime = r.cookTime;
   if (r.totalTime) out.totalTime = r.totalTime;
-  if (r.recipeCategory.length) out.recipeCategory = r.recipeCategory;
-  // Mealie has no cuisine field, so cuisines ride along as tags
-  const tags = [...new Map([...r.keywords, ...r.recipeCuisine].map((k) => [k.toLowerCase(), k])).values()];
-  if (tags.length) out.keywords = tags.join(", ");
+  // No keywords or recipeCategory: Mealie would turn every page keyword ("lentil soup recipe",
+  // "Main Course") into a tag or category of its own. autoTag files the recipe right after saving.
   if (r.nutrition) out.nutrition = { "@type": "NutritionInformation", ...r.nutrition };
   if (r.notes?.length) out.notes = r.notes;
   return out;
