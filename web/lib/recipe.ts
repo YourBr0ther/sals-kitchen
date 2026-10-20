@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { config } from "./config";
+import { UserError } from "./errors";
 import { decodeEntities, htmlToText } from "./html";
 import { type Heading, ingredientHeadings, type Note, recipeNotes } from "./recipe-card";
 import { fetchText, fetchViaService, HttpStatusError } from "./web";
@@ -44,7 +45,7 @@ export interface Recipe {
   notes?: Note[];
 }
 
-export class NoRecipeError extends Error {
+export class NoRecipeError extends UserError {
   constructor(
     message: string,
     readonly title = "",
@@ -317,7 +318,7 @@ async function fromPageText(excerpt: string, title: string, sourceUrl: string, p
   // the model now and then answers with broken JSON; one more try usually comes back clean
   const data = (await readRecipeText(excerpt, title, sourceUrl)) ?? (await readRecipeText(excerpt, title, sourceUrl));
   // a garbled reply says nothing about the page; don't cache it as "no recipe"
-  if (!data) throw new Error(`Couldn't read the recipe ${sourceUrl ? "off that page" : "from that"} this time. Try again.`);
+  if (!data) throw new UserError(`Couldn't read the recipe ${sourceUrl ? "off that page" : "from that"} this time. Try again.`);
   const ingredients = sectioned(data.recipeIngredient, 80);
   const steps = sectioned(data.recipeInstructions, 60);
   if (data.found === false || ingredients.lines.length < 2 || steps.lines.length < 1) {

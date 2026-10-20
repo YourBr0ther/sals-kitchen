@@ -4,7 +4,8 @@ import { addDays, localDate, shortDate, weekday, weekStart } from "./dates";
 import { llmJson } from "./llm";
 import { addShoppingItems, AISLES, createShoppingList, deleteShoppingItems, getRecipe, getShoppingList, shoppingListUrl } from "./mealie";
 import { listPantry } from "./pantry";
-import { extractRecipe } from "./recipe";
+import { UserError } from "./errors";
+import { extractRecipe, NoRecipeError } from "./recipe";
 import { getWeek } from "./week";
 
 /** How many people dinner is for. Kids count as a full plate; leftovers are a feature. */
@@ -17,7 +18,7 @@ const PROMPT = `You write a family's grocery list from the week's dinner recipes
 Answer with one JSON object and nothing else:
 {"items": [{"text": "3 yellow onions", "aisle": "Produce", "for": ["Tue", "Thu"]}], "leftOff": ["salt", "olive oil"]}
 Rules:
-- Scale every recipe from its own servings to the number of people eating. When a recipe's servings are unknown, assume it already feeds the family. Follow each night's note ("double it for lunches").
+- Scale every recipe from its own servings to the number of people eating. When a recipe's servings are unknown, assume it already feeds the family. Follow each night's note: "double it for lunches" means twice what the family needs, so scale to the family first, then double.
 - Combine the same ingredient across recipes into one item with the total amount ("2 lemons" + "1 lemon" = "3 lemons"; "1 cup + 2 tbsp butter" can become "1 1/4 cups butter").
 - Write amounts the way you'd buy them, rounded up to what a store sells: whole onions and lemons (2.25 lemons is 3 lemons), a bunch of cilantro, a 28 oz can of tomatoes, "1.5 lb chicken thighs", "1 lb ground chicken" (not 3/4 lb), a dozen eggs, a wedge of Parmesan, a pint of heavy cream. Never cups, tablespoons, or teaspoons for something sold in a package; spices and condiments are just "chili powder" or "1 jar salsa".
 - Keep each item short and lowercase except names (Parmesan): amount first, then the ingredient, plus a key detail only when it matters for buying (boneless, low-sodium).
@@ -45,6 +46,8 @@ export interface GroceryResult {
   missing: string[];
   /** items already checked off in Mealie that were kept as they were */
   kept: number;
+  /** it worked, with a loose end the person should know about */
+  warning?: string;
 }
 
 /** An item reduced to what it is, without amounts or the "(Mon, Thu)" note, so "3 lemons (Thu)" matches "2 lemons". */
@@ -78,6 +81,8 @@ function wholeCount(text: string): string {
 
 /** What's planned this week, with each dinner's ingredients from Mealie or its web page. */
 async function dishesFor(start: string): Promise<{ dishes: Dish[]; missing: string[] }> {
+  // a dinner with no recipe to read is "missing"; one whose recipe couldn't be reached right now is a reason to stop
+  const unreachable: string[] = [];
   const week = await getWeek(start);
   const dishes: Dish[] = [];
   const missing: string[] = [];
@@ -103,8 +108,13 @@ async function dishesFor(start: string): Promise<{ dishes: Dish[]; missing: stri
       }
     } catch (e) {
       console.warn(`[groceries] couldn't read ${n.title}:`, e);
-      missing.push(`${n.day} (${n.title})`);
+      if (e instanceof NoRecipeError) missing.push(`${n.day} (${n.title})`);
+      else unreachable.push(n.day);
     }
+  }
+  // a short list that quietly skips Tuesday is worse than asking to try again
+  if (unreachable.length) {
+    throw new UserError(`Couldn't read the recipe for ${unreachable.join(", ")} right now. Mealie or the recipe's site didn't answer. Try again in a minute.`);
   }
   return { dishes, missing };
 }
@@ -164,7 +174,7 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
       return { text: `${wholeCount(String(i.text).trim()).slice(0, 120)}${days.length ? ` (${days.join(", ")})` : ""}`, aisle };
     });
   console.log(`[groceries] ${dishes.length} dinners -> ${items.length} items in ${Math.round((Date.now() - t0) / 1000)}s`);
-  if (!items.length) throw new Error("Couldn't put a list together this time. Try again.");
+  if (!items.length) throw new UserError("Couldn't put a list together this time. Try again.");
   // only staples these recipes call for; "left off: ice, water" says nothing
   const used = dishes.flatMap((x) => x.ingredients).join("\n").toLowerCase();
   const boughtCores = new Set(bought.map(core));
@@ -181,26 +191,53 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
   const prev = d.prepare("select list_id, item_ids from grocery_lists where week_start = ?").get(start) as
     | { list_id: string; item_ids: string }
     | undefined;
+  const save = (listId: string, ids: string[], count: number) =>
+    d
+      .prepare(
+        `insert into grocery_lists (week_start, list_id, item_ids, item_count, created_by, updated_at) values (?, ?, ?, ?, ?, datetime('now'))
+         on conflict(week_start) do update set list_id = excluded.list_id, item_ids = excluded.item_ids,
+           item_count = excluded.item_count, created_by = excluded.created_by, updated_at = excluded.updated_at`,
+      )
+      .run(start, listId, JSON.stringify(ids), count, byUserId);
   let listId = prev?.list_id;
   let current = listId ? await getShoppingList(listId) : null;
+  let ours = new Set<string>(prev && current ? JSON.parse(prev.item_ids) : []);
   if (!current) {
     listId = await createShoppingList(name);
     current = { name, items: [] };
+    // remember it now, so a failure below reuses this list instead of making another
+    save(listId, [], 0);
+    ours = new Set();
   }
-  const ours = new Set<string>(prev && prev.list_id === listId ? JSON.parse(prev.item_ids) : []);
   const checked = current.items.filter((i) => i.checked);
   const checkedCores = new Set(checked.map((i) => core(i.note)));
-  await deleteShoppingItems(current.items.filter((i) => ours.has(i.id) && !i.checked).map((i) => i.id));
   // already bought: don't put it back on the list
   const fresh = items.filter((i) => !checkedCores.has(core(i.text)));
-  const ids = await addShoppingItems(listId!, fresh);
+  // new items go in first, so a failure leaves the old list as it was
+  const last = Math.max(-1, ...current.items.map((i) => i.position));
+  const ids = await addShoppingItems(listId!, fresh, last);
   const keptIds = checked.filter((i) => ours.has(i.id)).map((i) => i.id);
-
-  d.prepare(
-    `insert into grocery_lists (week_start, list_id, item_ids, item_count, created_by, updated_at) values (?, ?, ?, ?, ?, datetime('now'))
-     on conflict(week_start) do update set list_id = excluded.list_id, item_ids = excluded.item_ids,
-       item_count = excluded.item_count, created_by = excluded.created_by, updated_at = excluded.updated_at`,
-  ).run(start, listId, JSON.stringify([...ids, ...keptIds]), fresh.length, byUserId);
+  save(listId!, [...ids, ...keptIds], fresh.length);
+  // then the old unchecked ones come off (Mealie may have merged a new line into one of them, so keep those)
+  const added = new Set(ids);
+  const stale = current.items.filter((i) => ours.has(i.id) && !i.checked && !added.has(i.id)).map((i) => i.id);
+  let cleanupFailed = false;
+  try {
+    await deleteShoppingItems(stale);
+  } catch (e) {
+    console.warn("[groceries] couldn't clear the old items:", e);
+    save(listId!, [...ids, ...keptIds, ...stale], fresh.length);
+    cleanupFailed = true;
+  }
   logActivity(byUserId, `made the grocery list for the week of ${shortDate(start).slice(4)} (${fresh.length} items)`);
-  return { listId: listId!, url: shoppingListUrl(listId!), name: current.name, count: fresh.length, leftOff, missing, kept: checked.length };
+  return {
+    listId: listId!,
+    url: shoppingListUrl(listId!),
+    name: current.name,
+    count: fresh.length,
+    leftOff,
+    missing,
+    kept: checked.length,
+    warning: cleanupFailed ? "The old list's items are still there too; making it again will clear them." : undefined,
+  };
 }

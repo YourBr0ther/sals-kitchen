@@ -471,6 +471,7 @@ export interface ShoppingItem {
   note: string;
   checked: boolean;
   labelId: string | null;
+  position: number;
 }
 
 export const shoppingListUrl = (id: string) => `${config.mealie.publicUrl}/shopping-lists/${id}`;
@@ -483,7 +484,7 @@ export async function createShoppingList(name: string): Promise<string> {
 export async function getShoppingList(id: string): Promise<{ name: string; items: ShoppingItem[] } | null> {
   try {
     const l = await call<{ name: string; listItems?: (ShoppingItem & { display?: string })[] }>(`/api/households/shopping/lists/${encodeURIComponent(id)}`);
-    return { name: l.name, items: (l.listItems ?? []).map((i) => ({ id: i.id, note: i.note || i.display || "", checked: i.checked, labelId: i.labelId })) };
+    return { name: l.name, items: (l.listItems ?? []).map((i) => ({ id: i.id, note: i.note || i.display || "", checked: i.checked, labelId: i.labelId, position: i.position ?? 0 })) };
   } catch (e) {
     if (e instanceof MealieError && e.status === 404) return null;
     throw e;
@@ -517,7 +518,8 @@ async function aisleLabels(names: string[]): Promise<Map<string, string>> {
   return byName;
 }
 
-export async function addShoppingItems(listId: string, items: { text: string; aisle: string }[]): Promise<string[]> {
+/** Add items after the list's existing ones (`after` is the highest position already used). */
+export async function addShoppingItems(listId: string, items: { text: string; aisle: string }[], after = -1): Promise<string[]> {
   if (!items.length) return [];
   const labels = await aisleLabels(items.map((i) => i.aisle));
   const res = await call<{ createdItems: { id: string }[]; updatedItems: { id: string }[] }>("/api/households/shopping/items/create-bulk", {
@@ -528,7 +530,7 @@ export async function addShoppingItems(listId: string, items: { text: string; ai
         note: i.text,
         quantity: 0,
         checked: false,
-        position,
+        position: after + 1 + position,
         labelId: labels.get(i.aisle.toLowerCase()) ?? null,
       })),
     ),

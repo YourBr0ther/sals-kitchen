@@ -109,7 +109,8 @@ export default function WeekTicket({
     if (r.ok) {
       const count = Number(r.data.count ?? 0);
       const missing = (r.data.missing as string[]) ?? [];
-      setNote(`Grocery list is in Mealie: ${count} item${count === 1 ? "" : "s"}.` + (missing.length ? ` No recipe to shop from for ${missing.join(", ")}.` : ""));
+      const warning = r.data.warning ? ` ${String(r.data.warning)}` : "";
+      setNote(`Grocery list is in Mealie: ${count} item${count === 1 ? "" : "s"}.` + (missing.length ? ` No recipe to shop from for ${missing.join(", ")}.` : "") + warning);
     } else {
       setNote(String(r.data.error ?? "Couldn't make the list. Try again."));
     }

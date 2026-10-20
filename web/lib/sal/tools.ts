@@ -490,6 +490,8 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
         name: recipe.name,
         ingredients: recipe.recipeIngredient.length,
         steps: recipe.recipeInstructions.length,
+        // words the photo reader couldn't make out; mention them so the person can fix them in Mealie
+        unclear: [...recipe.recipeIngredient, ...recipe.recipeInstructions].filter((l) => l.includes("[unclear]")),
       };
     }
     case "make_grocery_list": {
@@ -593,6 +595,10 @@ export async function executeAction(
       if (r.leftOff.length) message += ` Left off: ${r.leftOff.join(", ")}.`;
       if (r.missing.length) {
         message += ` No recipe to shop from for ${r.missing.join(", ")}.`;
+        partial = true;
+      }
+      if (r.warning) {
+        message += ` ${r.warning}`;
         partial = true;
       }
       changed.push("week");
