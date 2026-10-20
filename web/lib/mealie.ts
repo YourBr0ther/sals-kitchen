@@ -1,4 +1,5 @@
 import { config, mealieConfigured } from "./config";
+import { decodeEntities } from "./html";
 import { type Recipe, toSchemaJson } from "./recipe";
 import { fetchImage } from "./web";
 
@@ -144,6 +145,124 @@ export async function getRecipe(slug: string) {
     steps: (r.recipeInstructions ?? []).map((s) => (s.title ? `[${s.title}] ${s.text}` : s.text)),
     notes: (r.notes ?? []).map((n) => `${n.title}: ${n.text}`),
   };
+}
+
+/** One line of an ingredient list or method; `title` is a section heading that starts here. */
+export interface RecipeLine {
+  title?: string;
+  text: string;
+}
+
+/** A recipe laid out for the in-app recipe card, rather than for Sal to read. */
+export interface RecipeDetail {
+  slug: string;
+  name: string;
+  description: string;
+  /** null when Mealie doesn't know, or the recipe makes a thing rather than servings */
+  servings: number | null;
+  /** "1 loaf", "28 cookies" */
+  makes: string | null;
+  times: { prep: string | null; cook: string | null; total: string | null };
+  ingredients: RecipeLine[];
+  steps: RecipeLine[];
+  notes: { title: string; text: string }[];
+  nutrition: { label: string; value: string }[];
+  sourceUrl: string | null;
+  mealieUrl: string;
+  hasImage: boolean;
+}
+
+/** Mealie slugs are lowercase letters, digits and hyphens; anything else never reaches Mealie. */
+export const isRecipeSlug = (s: unknown): s is string => typeof s === "string" && /^[a-z0-9][a-z0-9-]{0,199}$/.test(s);
+
+/** "PT1H10M" (older Mealie and schema.org) or plain text as is. */
+function readableTime(text: string | null | undefined, seconds: number | null | undefined): string | null {
+  const iso = text?.trim().match(/^P(?:\d+D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/i);
+  if (iso) return readableSeconds(Number(iso[1] ?? 0) * 3600 + Number(iso[2] ?? 0) * 60 + Number(iso[3] ?? 0));
+  return text?.trim() || readableSeconds(seconds);
+}
+
+const NUTRITION: [string, string, string][] = [
+  // [Mealie key, label, unit added when the value is a bare number]
+  ["calories", "Calories", ""],
+  ["proteinContent", "Protein", "g"],
+  ["carbohydrateContent", "Carbs", "g"],
+  ["fatContent", "Fat", "g"],
+  ["saturatedFatContent", "Saturated fat", "g"],
+  ["fiberContent", "Fiber", "g"],
+  ["sugarContent", "Sugar", "g"],
+  ["sodiumContent", "Sodium", "mg"],
+  ["cholesterolContent", "Cholesterol", "mg"],
+];
+
+const plainText = (s: string | null | undefined) => decodeEntities((s ?? "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+const webLink = (s: string | null | undefined) => (s && /^https?:\/\//i.test(s.trim()) ? s.trim() : null);
+
+export async function getRecipeDetail(slug: string): Promise<RecipeDetail> {
+  await loadGroupSlug();
+  const r = await call<RawRecipe & { image?: string | null; cookTime?: string | null }>(`/api/recipes/${encodeURIComponent(slug)}`);
+  let servings = r.recipeServings && r.recipeServings > 0 ? r.recipeServings : null;
+  let makes: string | null = [r.recipeYieldQuantity || "", r.recipeYield ?? ""].join(" ").trim() || null;
+  // older imports keep servings as yield text: "4 servings"
+  const asServings = makes?.match(/^(\d+)\s*(servings?|people|portions?)?$/i);
+  if (asServings) {
+    servings ??= Number(asServings[1]);
+    makes = null;
+  }
+  const lines = (items: { title?: string | null; text: string }[]) =>
+    items
+      .map((i) => ({ title: plainText(i.title) || undefined, text: plainText(i.text) }))
+      .filter((i) => i.text || i.title);
+  return {
+    slug: r.slug,
+    name: r.name,
+    description: plainText(r.description),
+    servings,
+    makes,
+    times: {
+      prep: readableTime(r.prepTime, r.prepTimeSeconds),
+      cook: readableTime(r.performTime || r.cookTime, r.performTimeSeconds),
+      total: readableTime(r.totalTime, r.totalTimeSeconds),
+    },
+    ingredients: lines((r.recipeIngredient ?? []).map((i) => ({ title: i.title, text: i.display || i.originalText || i.note || "" }))),
+    steps: lines(r.recipeInstructions ?? []),
+    notes: (r.notes ?? []).map((n) => ({ title: plainText(n.title), text: plainText(n.text) })).filter((n) => n.title || n.text),
+    nutrition: NUTRITION.flatMap(([key, label, unit]) => {
+      const v = String(r.nutrition?.[key] ?? "").trim();
+      if (!v || v === "0") return [];
+      return [{ label, value: /^[\d.]+$/.test(v) && unit ? `${v} ${unit}` : v }];
+    }),
+    sourceUrl: webLink(r.orgURL),
+    mealieUrl: recipeUrl(r.slug),
+    hasImage: Boolean(r.image),
+  };
+}
+
+// slug to Mealie's recipe id, so each photo request costs one call to Mealie, not two
+const recipeIds = new Map<string, string>();
+
+/**
+ * The recipe photo from Mealie, smallest good size first. Null when there's no photo.
+ * Only a slug that passed `isRecipeSlug` and the id Mealie returned for it go into the address.
+ */
+export async function getRecipeImage(slug: string): Promise<{ body: ReadableStream<Uint8Array>; type: string } | null> {
+  let id = recipeIds.get(slug);
+  if (!id) {
+    const r = await call<{ id?: string; image?: string | null }>(`/api/recipes/${encodeURIComponent(slug)}`);
+    if (!r.image || !r.id || !/^[0-9a-f-]{32,36}$/i.test(r.id)) return null;
+    id = r.id;
+    if (recipeIds.size > 500) recipeIds.clear();
+    recipeIds.set(slug, id);
+  }
+  for (const file of ["min-original.webp", "original.webp"]) {
+    const res = await fetch(`${config.mealie.url}/api/media/recipes/${id}/images/${file}`, {
+      headers: { Authorization: `Bearer ${config.mealie.token}` },
+      signal: AbortSignal.timeout(30_000),
+    }).catch(() => null);
+    if (res?.ok && res.body) return { body: res.body, type: res.headers.get("content-type") || "image/webp" };
+    await res?.body?.cancel().catch(() => {});
+  }
+  return null;
 }
 
 /**
