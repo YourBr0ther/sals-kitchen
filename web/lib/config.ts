@@ -39,6 +39,13 @@ export const config = {
   eveningStart: Number(env("EVENING_START_HOUR", "17")),
   eveningEnd: Number(env("EVENING_END_HOUR", "20")),
   dataDir: path.resolve(/* turbopackIgnore: true */ env("DATA_DIR", "./data")),
+  // reminders sent as web push; make a key pair with `npx web-push generate-vapid-keys`
+  push: {
+    publicKey: env("VAPID_PUBLIC_KEY"),
+    privateKey: env("VAPID_PRIVATE_KEY"),
+    // push services contact this if something goes wrong; the app's own address is enough
+    subject: env("VAPID_SUBJECT", env("APP_URL", "https://localhost").replace(/\/$/, "")),
+  },
 };
 
 export const mealieConfigured = () => Boolean(config.mealie.url && config.mealie.token);

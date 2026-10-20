@@ -77,3 +77,43 @@ self.addEventListener("fetch", (event) => {
     );
   }
 });
+
+// Reminders from the server. The payload is { title, body, url, tag } (see lib/push.ts).
+self.addEventListener("push", (event) => {
+  let msg = {};
+  try {
+    msg = event.data ? event.data.json() : {};
+  } catch {
+    msg = { body: event.data ? event.data.text() : "" };
+  }
+  event.waitUntil(
+    self.registration.showNotification(msg.title || "Sal's Kitchen", {
+      body: msg.body || "",
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      tag: msg.tag || undefined,
+      data: { url: msg.url || "/" },
+    }),
+  );
+});
+
+// Tapping a reminder brings the app forward on the right tab, or opens it.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL((event.notification.data && event.notification.data.url) || "/", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      const win = wins.find((w) => new URL(w.url).origin === self.location.origin);
+      if (!win) return self.clients.openWindow(target);
+      // focus first, while the tap still counts as the person's own action
+      return win.focus().then((w) => {
+        if (w.url === target) return w;
+        // navigate() only works on pages this worker controls; otherwise open a fresh window
+        return w
+          .navigate(target)
+          .then((nav) => nav || self.clients.openWindow(target))
+          .catch(() => self.clients.openWindow(target));
+      });
+    }),
+  );
+});
