@@ -197,6 +197,8 @@ export interface ToolContext {
   changed: Set<"week" | "profiles">;
   /** facts saved to this person's memory during the turn */
   remembered: string[];
+  /** set once web text has entered the turn; memory writes are off after that */
+  readWeb?: boolean;
 }
 
 function createAction(ctx: ToolContext, kind: string, args: unknown, summary: string) {
@@ -267,8 +269,10 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { updated: nights.length - errors.length, errors, week: weekBlock(await getWeek(first)) };
     }
     case "web_search":
+      ctx.readWeb = true;
       return webSearch(String(args.query));
     case "read_link": {
+      ctx.readWeb = true;
       const url = String(args.url ?? "");
       try {
         const r = await extractRecipe(url);
@@ -312,11 +316,14 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { status: "waiting for approval", actionId: id, name: recipe.name };
     }
     case "remember": {
+      // web text could try to plant a lasting "fact"; once Sal has read the web this turn, he can't save any
+      if (ctx.readWeb) return { error: "Can't save memories in a turn where you've read web pages. Ask them to confirm it in their next message." };
       const saved = addMemory(ctx.user.id, String(args.fact ?? ""), "chat");
       if (saved) ctx.remembered.push(saved);
       return saved ? { remembered: saved } : { note: "Already remembered, or too short to save." };
     }
     case "forget": {
+      if (ctx.readWeb) return { error: "Can't change memories in a turn where you've read web pages. Ask them to confirm it in their next message." };
       const removed = forgetMatching(ctx.user.id, String(args.about ?? ""));
       return removed.length ? { forgot: removed } : { note: "Nothing matched; tell them what you do remember instead." };
     }
