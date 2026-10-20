@@ -1,6 +1,6 @@
 import { logActivity } from "./activity";
 import { getDb, listUsers } from "./db";
-import { addDays, weekday, weekStart } from "./dates";
+import { addDays, localDate, shortDate, weekday, weekStart } from "./dates";
 import { llmJson } from "./llm";
 import { addShoppingItems, AISLES, createShoppingList, deleteShoppingItems, getRecipe, getShoppingList, shoppingListUrl } from "./mealie";
 import { listPantry } from "./pantry";
@@ -46,8 +46,10 @@ export interface GroceryResult {
   kept: number;
 }
 
+/** An item reduced to what it is, without amounts or the "(Mon, Thu)" note, so "3 lemons (Thu)" matches "2 lemons". */
 const core = (s: string) =>
   s
+    .replace(/\s*\([^)]*\)\s*$/, "")
     .toLowerCase()
     .replace(/[\d½¼¾⅓⅔⅛.,/()-]+/g, " ")
     .replace(/\b(cups?|tbsps?|tablespoons?|tsps?|teaspoons?|lbs?|pounds?|oz|ounces?|g|kg|ml|cans?|bunch(es)?|heads?|cloves?|packages?|large|medium|small|about)\b/g, " ")
@@ -59,8 +61,10 @@ async function dishesFor(start: string): Promise<{ dishes: Dish[]; missing: stri
   const week = await getWeek(start);
   const dishes: Dish[] = [];
   const missing: string[] = [];
+  // dinners already behind us were shopped for (and eaten)
+  const today = localDate();
   for (const n of week.nights) {
-    if (!n.cooking || !n.title) continue;
+    if (!n.cooking || !n.title || n.date < today) continue;
     try {
       if (n.recipeSlug) {
         const r = await getRecipe(n.recipeSlug);
@@ -100,7 +104,9 @@ export function buildGroceryList(start: string, byUserId: number): Promise<Groce
 async function buildNow(start: string, byUserId: number): Promise<GroceryResult> {
   const { dishes, missing } = await dishesFor(start);
   if (!dishes.length) {
-    throw new Error(missing.length ? `None of this week's dinners have a recipe to shop from (${missing.join(", ")}).` : "Nothing's planned this week yet.");
+    throw new Error(
+      missing.length ? `None of the dinners left this week have a recipe to shop from (${missing.join(", ")}).` : "No dinners left to shop for this week.",
+    );
   }
   const people = householdSize();
   const pantry = listPantry().map((p) => p.item);
@@ -110,6 +116,7 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
         `${d.day}: ${d.title} (recipe makes: ${d.servings ?? "unknown"})${d.note ? `\nNote: ${d.note}` : ""}\n${d.ingredients.map((i) => `- ${i}`).join("\n")}`,
     )
     .join("\n\n");
+  const t0 = Date.now();
   const out = await llmJson<{ items?: unknown; leftOff?: unknown }>(
     PROMPT,
     `People eating: ${people}\nStaples: ${STAPLES}\nAlready in the kitchen: ${pantry.join(", ") || "(nothing listed)"}\n\n${menu}`,
@@ -123,6 +130,7 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
       const aisle = AISLES.find((a) => a.toLowerCase() === String(i.aisle ?? "").toLowerCase()) ?? "Other";
       return { text: `${String(i.text).trim().slice(0, 120)}${days.length ? ` (${days.join(", ")})` : ""}`, aisle };
     });
+  console.log(`[groceries] ${dishes.length} dinners -> ${items.length} items in ${Math.round((Date.now() - t0) / 1000)}s`);
   if (!items.length) throw new Error("Couldn't put a list together this time. Try again.");
   const leftOff = (Array.isArray(out.leftOff) ? out.leftOff : []).filter((x): x is string => typeof x === "string").slice(0, 30);
 
@@ -142,7 +150,7 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
   const checkedCores = new Set(checked.map((i) => core(i.note)));
   await deleteShoppingItems(current.items.filter((i) => ours.has(i.id) && !i.checked).map((i) => i.id));
   // already bought: don't put it back on the list
-  const fresh = items.filter((i) => !checkedCores.has(core(i.text.replace(/\s*\([^)]*\)$/, ""))));
+  const fresh = items.filter((i) => !checkedCores.has(core(i.text)));
   const ids = await addShoppingItems(listId!, fresh);
   const keptIds = checked.filter((i) => ours.has(i.id)).map((i) => i.id);
 
@@ -151,6 +159,6 @@ async function buildNow(start: string, byUserId: number): Promise<GroceryResult>
      on conflict(week_start) do update set list_id = excluded.list_id, item_ids = excluded.item_ids,
        item_count = excluded.item_count, created_by = excluded.created_by, updated_at = excluded.updated_at`,
   ).run(start, listId, JSON.stringify([...ids, ...keptIds]), fresh.length, byUserId);
-  logActivity(byUserId, `made the grocery list for the week of ${start} (${fresh.length} items)`);
+  logActivity(byUserId, `made the grocery list for the week of ${shortDate(start).slice(4)} (${fresh.length} items)`);
   return { listId: listId!, url: shoppingListUrl(listId!), name: current.name, count: fresh.length, leftOff, missing, kept: checked.length };
 }

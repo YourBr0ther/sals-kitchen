@@ -2,7 +2,7 @@ import { guarded, readJson } from "@/lib/http";
 import type { NextRequest } from "next/server";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
-import { isDate, weekday } from "@/lib/dates";
+import { isDate, shortDate } from "@/lib/dates";
 import { MealieError } from "@/lib/mealie";
 import { getWeek, updateNight } from "@/lib/week";
 
@@ -28,10 +28,10 @@ export const PATCH = guarded("week PATCH", async function PATCH(req: Request) {
       await updateNight({ date: body.date, title: body.title.slice(0, 120), sourceUrl: null }, user.id);
     }
     if (body.cooking !== undefined) await updateNight({ date: body.date, cooking: body.cooking }, user.id);
-    const day = weekday(body.date);
-    if (body.clear) logActivity(user.id, `cleared ${day} ${body.date}`);
-    else if (typeof body.title === "string") logActivity(user.id, `put ${body.title.slice(0, 120)} on ${day} ${body.date}`);
-    if (body.cooking !== undefined) logActivity(user.id, `marked ${day} ${body.date} as ${body.cooking ? "a cooking night" : "no cooking"}`);
+    const day = shortDate(body.date);
+    if (body.clear) logActivity(user.id, `cleared ${day}`);
+    else if (typeof body.title === "string") logActivity(user.id, `put ${body.title.slice(0, 120)} on ${day}`);
+    if (body.cooking !== undefined) logActivity(user.id, `marked ${day} as ${body.cooking ? "a cooking night" : "no cooking"}`);
   } catch (e) {
     console.warn("[week PATCH]", e);
     const message = e instanceof MealieError ? e.message : "Couldn't change that night. Try again.";

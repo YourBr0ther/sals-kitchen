@@ -50,7 +50,6 @@ const speakable = (md: string) =>
 /** Sal reads a reply out loud: his voice from the server, or the phone's own voice if that fails. */
 export function useSpeaker() {
   const [speaking, setSpeaking] = useState<number | null>(null);
-  const urls = useRef(new Map<number, string>());
   const current = useRef<number | null>(null);
 
   const stop = useCallback(() => {
@@ -73,22 +72,11 @@ export function useSpeaker() {
           setSpeaking(null);
         }
       };
-      try {
-        let url = urls.current.get(id);
-        if (!url) {
-          const res = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messageId: id }) });
-          if (!res.ok) throw new Error("no voice");
-          url = URL.createObjectURL(await res.blob());
-          urls.current.set(id, url);
-        }
-        if (current.current !== id) return;
-        const p = getPlayer();
-        p.onended = done;
-        p.onerror = done;
-        p.src = url;
-        await p.play();
-      } catch {
-        if (current.current !== id) return;
+      let fellBack = false;
+      const fallback = () => {
+        // a failed load can report through both the error event and play()'s rejection
+        if (current.current !== id || fellBack) return;
+        fellBack = true;
         // the phone's built-in voice is better than silence
         if (typeof speechSynthesis === "undefined") return done();
         const u = new SpeechSynthesisUtterance(speakable(text));
@@ -96,6 +84,16 @@ export function useSpeaker() {
         u.onend = done;
         u.onerror = done;
         speechSynthesis.speak(u);
+      };
+      try {
+        // the server streams the audio, so playback starts before the whole reply is spoken
+        const p = getPlayer();
+        p.onended = done;
+        p.onerror = fallback;
+        p.src = `/api/tts?id=${id}`;
+        await p.play();
+      } catch {
+        fallback();
       }
     },
     [stop],

@@ -303,7 +303,7 @@ input, textarea { font: inherit; color: inherit; }
   background: var(--forest); color: #fff; border: 0; border-radius: 12px; padding: 11px 14px; min-height: 44px;
 }
 .push:hover { background: var(--forest-deep); }
-.push:disabled { background: #6fa387; }
+.push:disabled { opacity: .5; }
 .ticket .msgline { font-family: var(--font-body); font-size: 13px; color: var(--muted); margin: 0; }
 
 /* ---------- profiles ---------- */

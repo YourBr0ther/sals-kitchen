@@ -185,7 +185,8 @@ export function visibleMessages(userId: number, range?: { after: number; through
     out.push({
       id: r.id,
       role: r.role as VisibleMessage["role"],
-      content: r.role === "assistant" ? (p.display ?? r.content) : r.content,
+      // app events carry recipe slugs for Sal; people don't need to see them
+      content: r.role === "assistant" ? (p.display ?? r.content) : r.role === "event" ? r.content.replace(/ \(slug [^)]+\)/g, "") : r.content,
       createdAt: r.created_at,
       attachments: p.attachments,
       voice: p.voice,

@@ -109,6 +109,8 @@ export async function* runTurn(user: User, signal?: AbortSignal, stopped?: Abort
         }
       }
 
+      // an aborted stream can end quietly instead of throwing; treat it as the stop it was
+      signal?.throwIfAborted();
       const leaked = parseLeakedToolCalls(text);
       if (leaked.calls.length && !calls.filter(Boolean).length) {
         calls.push(...leaked.calls);

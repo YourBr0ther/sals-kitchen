@@ -364,15 +364,19 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
         }
       }
       ctx.changed.add("week");
+      const first = nights.find((n) => isDate(n.date))?.date as string | undefined;
+      const after = await getWeek(first);
       const done = nights.filter((n) => isDate(n.date) && !errors.some((e) => e.startsWith(`${n.date}:`)));
       if (done.length) {
-        const what = done.map((n) =>
-          n.status === "off" ? `${weekday(n.date as string)} off` : n.title ? `${weekday(n.date as string)}: ${n.title}` : `${weekday(n.date as string)} cleared`,
-        );
-        logActivity(ctx.user.id, `planned with Sal: ${what.join(", ")}`);
+        // read back what each night says now, so a recipe planned by slug logs its name
+        const what = done.map((n) => {
+          const night = after.nights.find((x) => x.date === n.date);
+          const day = weekday(n.date as string);
+          return !night?.cooking ? `${day} off` : night.title ? `${day}: ${night.title}` : `${day} open`;
+        });
+        logActivity(ctx.user.id, `planned with Sal: ${[...new Set(what)].join(", ")}`);
       }
-      const first = nights.find((n) => isDate(n.date))?.date as string | undefined;
-      return { updated: nights.length - errors.length, errors, week: weekBlock(await getWeek(first)) };
+      return { updated: nights.length - errors.length, errors, week: weekBlock(after) };
     }
     case "web_search":
       return webSearch(String(args.query));

@@ -3,7 +3,8 @@ import path from "node:path";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { config } from "@/lib/config";
 import { getDb } from "@/lib/db";
-import { guarded, readJson } from "@/lib/http";
+import type { NextRequest } from "next/server";
+import { guarded } from "@/lib/http";
 
 const MAX_CHARS = 3000;
 
@@ -20,13 +21,14 @@ function speakable(md: string): string {
     .slice(0, MAX_CHARS);
 }
 
-/** Sal reads one of his replies out loud. Audio is kept, so replaying it costs nothing. */
-export const POST = guarded("tts POST", async function POST(req: Request) {
+/**
+ * Sal reads one of his replies out loud. The audio streams as it's made, so a long reply
+ * starts playing in a second or two; a finished copy is kept so replaying it costs nothing.
+ */
+export const GET = guarded("tts GET", async function GET(req: NextRequest) {
   const user = await currentUser();
   if (!user) return unauthorized();
-  const parsed = await readJson<{ messageId?: unknown }>(req);
-  if (!parsed.ok) return parsed.response;
-  const id = Number(parsed.data.messageId);
+  const id = Number(req.nextUrl.searchParams.get("id"));
   const row = getDb().prepare("select content, payload from messages where id = ? and user_id = ? and role = 'assistant'").get(id, user.id) as
     | { content: string; payload: string }
     | undefined;
@@ -48,18 +50,29 @@ export const POST = guarded("tts POST", async function POST(req: Request) {
       input: text,
       instructions: config.nanogpt.ttsInstructions,
       response_format: "mp3",
+      stream: true,
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(90_000),
   }).catch((e: Error) => {
     console.error("[tts]", e);
     return null;
   });
-  if (!res?.ok) {
+  if (!res?.ok || !res.body) {
     if (res) console.error(`[tts] service answered ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
     return Response.json({ error: "Sal's voice isn't working right now." }, { status: 502 });
   }
-  const audio = Buffer.from(await res.arrayBuffer());
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, audio);
-  return new Response(audio, { headers: { ...headers, "Content-Type": res.headers.get("content-type") || "audio/mpeg" } });
+  const [toPhone, toDisk] = res.body.tee();
+  // keep a copy only once the whole thing has arrived
+  void (async () => {
+    const chunks: Uint8Array[] = [];
+    try {
+      const reader = toDisk.getReader();
+      for (let r = await reader.read(); !r.done; r = await reader.read()) chunks.push(r.value);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, Buffer.concat(chunks));
+    } catch (e) {
+      console.warn(`[tts] didn't keep audio for message ${id}:`, (e as Error).message);
+    }
+  })();
+  return new Response(toPhone, { headers: { ...headers, "Content-Type": res.headers.get("content-type") || "audio/mpeg" } });
 });

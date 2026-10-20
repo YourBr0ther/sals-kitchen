@@ -2,7 +2,7 @@ import { guarded, readJson } from "@/lib/http";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { addMessage } from "@/lib/chat";
-import { isDate } from "@/lib/dates";
+import { isDate, shortDate } from "@/lib/dates";
 import { MealieError } from "@/lib/mealie";
 import { getWeek, sendWeekToMealie } from "@/lib/week";
 
@@ -17,7 +17,7 @@ export const POST = guarded("week/send POST", async function POST(req: Request) 
   try {
     const r = await sendWeekToMealie(start);
     addMessage(user.id, "event", `${user.name} sent the week of ${start} to Mealie (${r.sent} dinners).`);
-    logActivity(user.id, `sent the week of ${start} to Mealie (${r.sent} dinners)`);
+    logActivity(user.id, `sent the week of ${shortDate(start).slice(4)} to Mealie (${r.sent} dinners)`);
     return Response.json({ ...r, week: await getWeek(start) });
   } catch (e) {
     console.error("[week/send]", e);

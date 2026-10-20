@@ -168,7 +168,6 @@ export default function SettingsView({
       <p className="sub">These are yours, {me.name}. Everyone in the household sets their own.</p>
 
       <div className="set-group">
-        <h3>Reminders</h3>
         <RemindersSettings />
       </div>
 

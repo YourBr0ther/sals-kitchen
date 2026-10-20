@@ -1,6 +1,6 @@
 import { logActivity } from "./activity";
 import { getDb, type User } from "./db";
-import { addDays, localDate, weekday, weekStart, zonedTime } from "./dates";
+import { addDays, localDate, shortDate, weekday, weekStart, zonedTime } from "./dates";
 import { addTimelineEvent, markMade, rateRecipe } from "./mealie";
 import { getWeek, type Night } from "./week";
 
@@ -83,7 +83,7 @@ export async function recordFeedback(
     `insert into feedback (date, user_id, verdict, comment) values (?, ?, ?, ?)
      on conflict(date, user_id) do update set verdict = excluded.verdict, comment = coalesce(excluded.comment, feedback.comment), created_at = datetime('now')`,
   ).run(date, user.id, verdict, note);
-  if (verdict !== "dismissed") logActivity(user.id, `said ${weekday(date)}'s ${night.title}: ${VERDICT_WORDS[verdict]}${note ? ` ("${note}")` : ""}`);
+  if (verdict !== "dismissed") logActivity(user.id, `said ${night.title} on ${shortDate(date)}: ${VERDICT_WORDS[verdict]}${note ? ` ("${note}")` : ""}`);
 
   if (!night.recipeSlug || verdict === "dismissed") return { title: night.title };
   const when = zonedTime(date, 19);
