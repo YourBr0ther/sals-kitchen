@@ -3,7 +3,7 @@ import path from "node:path";
 import type OpenAI from "openai";
 import { config } from "./config";
 import { getDb } from "./db";
-import { HISTORY_BUDGET, OLD_TOOL_CHARS, RECENT_TOOL_CHARS, rowCost, windowRows } from "./memory";
+import { currentTurnStart, HISTORY_BUDGET, OLD_TOOL_CHARS, RECENT_TOOL_CHARS, recentFrom, rowCost, windowRows } from "./memory";
 
 type Role = "user" | "assistant" | "tool" | "event" | "reset";
 
@@ -68,19 +68,28 @@ export function imageDataUrl(id: string, userId: number): string | null {
  */
 export function modelHistory(userId: number): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   const rows = windowRows(userId);
-  const userTurns = rows.map((r, i) => (r.role === "user" ? i : -1)).filter((i) => i >= 0);
-  const recentFrom = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : 0;
+  const recent = recentFrom(rows);
+  const turnStart = currentTurnStart(rows);
 
-  let start = rows.length;
-  let used = 0;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const cost = rowCost(rows[i], i >= recentFrom);
-    if (used + cost > HISTORY_BUDGET && start < rows.length) break;
+  // the turn being answered always goes in whole, so its question is never cut off;
+  // if its tool results alone are too big, each one gets a smaller share instead
+  const turnTools = rows.slice(turnStart).filter((r) => r.role === "tool");
+  const turnOther = rows.slice(turnStart).reduce((n, r) => n + (r.role === "tool" ? 0 : rowCost(r, true)), 0);
+  const turnToolCap = turnTools.length
+    ? Math.max(800, Math.min(RECENT_TOOL_CHARS, Math.floor((HISTORY_BUDGET - turnOther) / turnTools.length)))
+    : RECENT_TOOL_CHARS;
+  let used = rows.slice(turnStart).reduce((n, r) => n + (r.role === "tool" ? Math.min(r.content.length, turnToolCap) : rowCost(r, true)), 0);
+
+  // earlier turns fill whatever room is left, newest first
+  let start = turnStart;
+  for (let i = turnStart - 1; i >= 0; i--) {
+    const cost = rowCost(rows[i], i >= recent);
+    if (used + cost > HISTORY_BUDGET) break;
     used += cost;
     start = i;
   }
   // never start mid-exchange: tool results need the assistant call that asked for them
-  while (start < rows.length && rows[start].role !== "user" && rows[start].role !== "event") start++;
+  while (start < turnStart && rows[start].role !== "user" && rows[start].role !== "event") start++;
 
   // an assistant tool call is only valid with every one of its results right after it;
   // anything else (older data, an event that slipped in between) is left out
@@ -117,7 +126,7 @@ export function modelHistory(userId: number): OpenAI.Chat.Completions.ChatComple
       if (a.tool_calls?.length) out.push({ role: "assistant", content: r.content || null, tool_calls: a.tool_calls });
       else out.push({ role: "assistant", content: r.content });
     } else if (r.role === "tool") {
-      const limit = i >= recentFrom ? RECENT_TOOL_CHARS : OLD_TOOL_CHARS;
+      const limit = i >= turnStart ? turnToolCap : i >= recent ? RECENT_TOOL_CHARS : OLD_TOOL_CHARS;
       const content = r.content.length > limit ? `${r.content.slice(0, limit)}… (trimmed)` : r.content;
       out.push({ role: "tool", tool_call_id: (p as ToolPayload).tool_call_id, content });
     } else if (r.role === "event") {

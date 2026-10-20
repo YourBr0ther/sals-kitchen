@@ -25,7 +25,8 @@ if (typeof window !== "undefined") {
 export function ServiceWorker() {
   useEffect(() => {
     if (!("serviceWorker" in navigator) || process.env.NODE_ENV !== "production") return;
-    const register = () => navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("[sw] register failed", e));
+    const url = `/sw.js?v=${encodeURIComponent(process.env.NEXT_PUBLIC_BUILD_ID ?? "dev")}`;
+    const register = () => navigator.serviceWorker.register(url).catch((e) => console.warn("[sw] register failed", e));
     if (document.readyState === "complete") register();
     else window.addEventListener("load", register, { once: true });
   }, []);

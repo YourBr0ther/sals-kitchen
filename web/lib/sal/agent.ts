@@ -141,7 +141,12 @@ export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator
       if (text.trim()) yield { type: "text", delta: "\n\n" };
       const results: { id: string; name: string; content: string }[] = [];
       for (const call of toolCalls) {
-        signal?.throwIfAborted();
+        if (signal?.aborted) {
+          // keep what already ran (approvals created, memories saved), so a retry doesn't redo it
+          const done = new Set(results.map((r) => r.id));
+          if (results.length) addToolExchange(user.id, text.trim(), toolCalls.filter((c) => done.has(c.id)), results);
+          signal.throwIfAborted();
+        }
         yield { type: "status", label: TOOL_LABELS[call.function.name] ?? "Working on it" };
         let result: unknown;
         try {

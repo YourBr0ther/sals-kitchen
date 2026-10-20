@@ -48,7 +48,9 @@ async function loadEvents(): Promise<{ events: VEvent[]; error?: string }> {
   loading ??= refresh().finally(() => {
     loading = null;
   });
-  await loading;
+  // only wait when some feed has never loaded; otherwise answer from the last copy
+  // and let the refresh finish in the background, so a slow feed never stalls the chat
+  if (config.calendarUrls.some((u) => !feeds.get(u)?.events.length && !feeds.get(u)?.ok)) await loading;
   const all = config.calendarUrls.map((u) => feeds.get(u));
   const errors = all.filter((f) => f && !f.ok).map((f) => f!.error);
   const neverLoaded = all.some((f) => !f || (!f.ok && !f.events.length));

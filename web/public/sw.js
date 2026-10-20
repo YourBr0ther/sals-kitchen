@@ -3,7 +3,8 @@
 // gone, show the offline page. Build assets, icons, and fonts are cached because their
 // URLs change whenever their contents do. Nothing under /api is ever cached.
 
-const VERSION = "v1";
+// the page registers /sw.js?v=<build id>, so every deploy installs a new worker and cache
+const VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
 const STATIC_CACHE = `sal-static-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
 const PRECACHE = [OFFLINE_URL, "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/icon-180.png"];
@@ -39,6 +40,24 @@ self.addEventListener("fetch", (event) => {
 
   if (req.mode === "navigate") {
     event.respondWith(fetch(req).catch(() => caches.match(OFFLINE_URL)));
+    return;
+  }
+
+  // icons keep their names across deploys: answer from cache, refresh in the background
+  if (url.origin === self.location.origin && /^\/icon[\w-]*\.(png|svg)$/.test(url.pathname)) {
+    event.respondWith(
+      caches.open(STATIC_CACHE).then((cache) =>
+        cache.match(req).then((hit) => {
+          const fresh = fetch(req)
+            .then((res) => {
+              if (res.ok) cache.put(req, res.clone());
+              return res;
+            })
+            .catch(() => hit);
+          return hit || fresh;
+        }),
+      ),
+    );
     return;
   }
 

@@ -38,7 +38,7 @@ type NightRow = {
 };
 
 /** What a night looked like when it went to Mealie; if it changes, the ticket stops saying "in Mealie". */
-const signature = (r: Pick<NightRow, "title" | "recipe_id" | "source_url" | "note">) =>
+export const signature = (r: Pick<NightRow, "title" | "recipe_id" | "source_url" | "note">) =>
   JSON.stringify([r.title ?? "", r.recipe_id ?? "", r.source_url ?? "", r.note ?? ""]);
 
 export async function getWeek(start = weekStart(localDate())): Promise<Week> {
@@ -156,13 +156,16 @@ async function sendNow(start: string): Promise<{ sent: number; skipped: string[]
       await deleteMealPlan(row.mealie_entry_id);
       d.prepare("update nights set mealie_entry_id = null, sent_signature = null where date = ?").run(n.date);
     }
-    if (!n.cooking || !n.title || !row) {
-      if (n.cooking) skipped.push(n.day);
+    // read the night fresh: someone may have changed it while earlier nights were sending
+    const now = d.prepare("select * from nights where date = ?").get(n.date) as NightRow | undefined;
+    const cooking = now?.cooking == null ? n.busy.length === 0 : now.cooking === 1;
+    if (!cooking || !now?.title) {
+      if (cooking) skipped.push(n.day);
       continue;
     }
-    const text = [n.note, n.sourceUrl && !n.recipeId ? `Recipe: ${n.sourceUrl}` : null].filter(Boolean).join("\n");
-    const entry = await createDinner({ date: n.date, title: n.recipeId ? "" : n.title, text, recipeId: n.recipeId });
-    d.prepare("update nights set mealie_entry_id = ?, sent_signature = ? where date = ?").run(String(entry.id), signature(row), n.date);
+    const text = [now.note, now.source_url && !now.recipe_id ? `Recipe: ${now.source_url}` : null].filter(Boolean).join("\n");
+    const entry = await createDinner({ date: n.date, title: now.recipe_id ? "" : now.title, text, recipeId: now.recipe_id });
+    d.prepare("update nights set mealie_entry_id = ?, sent_signature = ? where date = ?").run(String(entry.id), signature(now), n.date);
     sent++;
   }
   return { sent, skipped };

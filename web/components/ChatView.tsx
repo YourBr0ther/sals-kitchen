@@ -70,15 +70,37 @@ export default function ChatView({
 
   /** Reload history from the server; if Sal is still mid-reply, keep checking until he's done. */
   const again = useRef<() => void>(() => {});
+  const onChangedRef = useRef(onChanged);
+  useEffect(() => {
+    onChangedRef.current = onChanged;
+  }, [onChanged]);
+  const wasWaiting = useRef(false);
   const resync = useCallback(async () => {
     clearTimeout(pollTimer.current);
     try {
       const data = await fetchHistory();
+      // a send started while this was loading; its own stream owns the screen now
+      if (sendingRef.current) return;
       setLoadFailed(false);
       setMessages(data.messages);
       setWaiting(data.busy);
-      if (data.busy) pollTimer.current = setTimeout(() => again.current(), POLL_MS);
+      if (data.busy) {
+        wasWaiting.current = true;
+        pollTimer.current = setTimeout(() => again.current(), POLL_MS);
+        return;
+      }
+      if (wasWaiting.current) {
+        // a reply finished while we weren't streaming it: refresh the week and profiles too
+        wasWaiting.current = false;
+        onChangedRef.current(["week", "profiles"]);
+      }
+      // the last word is still theirs and nobody's working on it: the reply never came
+      const last = data.messages.at(-1);
+      if (last?.role === "user" && Date.now() - new Date(last.createdAt.includes("T") ? last.createdAt : `${last.createdAt.replace(" ", "T")}Z`).getTime() > 5000) {
+        setProblem({ message: "Sal didn't get to answer that one.", retry: true });
+      }
     } catch {
+      if (sendingRef.current) return;
       setLoadFailed(true);
       pollTimer.current = setTimeout(() => again.current(), POLL_MS * 3);
     }
@@ -128,6 +150,8 @@ export default function ChatView({
     async (text: string, attachments: string[] = [], voice = false, followUp = false): Promise<boolean> => {
       if (sendingRef.current) return false;
       sendingRef.current = true;
+      clearTimeout(pollTimer.current);
+      setWaiting(false);
       setProblem(null);
       stick.current = true;
       const tempId = -Date.now();
@@ -156,6 +180,7 @@ export default function ChatView({
           return false;
         }
         if (!res.ok || !res.body) {
+          setMessages((m) => (m ?? []).filter((x) => x.id !== tempId));
           const data = await res.json().catch(() => ({}));
           if (data.busy) {
             // a reply from earlier is still cooking; show it when it lands
@@ -191,7 +216,7 @@ export default function ChatView({
             } else if (ev.type === "done") {
               finished = true;
               setMessages((m) => [
-                ...(m ?? []),
+                ...(m ?? []).filter((x) => x.id !== ev.messageId),
                 {
                   id: ev.messageId,
                   role: "assistant",

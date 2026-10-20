@@ -9,7 +9,7 @@ export const POST = guarded("chat/reset POST", async function POST() {
   const user = await currentUser();
   if (!user) return unauthorized();
   if (isBusy(user.id)) return Response.json({ error: "Wait for Sal to finish answering, then start fresh." }, { status: 409 });
-  // reads the old conversation right away, then saves its lasting facts in the background
+  // reads the old conversation right away (before the marker below), then saves its facts in the background
   void closeConversation(user.id, user.name);
   addMessage(user.id, "reset", "");
   return Response.json({ ok: true });

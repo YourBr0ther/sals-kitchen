@@ -114,7 +114,12 @@ create table if not exists uploads (
 /** Columns and constraints added after the first deploy. Each step is safe to run again. */
 function migrate(d: Database.Database) {
   const cols = (table: string) => (d.prepare(`pragma table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
-  if (!cols("nights").includes("sent_signature")) d.exec("alter table nights add column sent_signature text");
+  if (!cols("nights").includes("sent_signature")) {
+    d.exec("alter table nights add column sent_signature text");
+    // nights sent before this column existed match whatever they hold now
+    d.exec(`update nights set sent_signature = json_array(coalesce(title, ''), coalesce(recipe_id, ''), coalesce(source_url, ''), coalesce(note, ''))
+            where mealie_entry_id is not null`);
+  }
   // the first schema limited action statuses with a check; 'running' needs the table rebuilt without it
   const ddl = (d.prepare("select sql from sqlite_master where name = 'pending_actions'").get() as { sql: string }).sql;
   if (ddl.includes("check (status in")) {
@@ -134,8 +139,8 @@ function migrate(d: Database.Database) {
       d.exec("alter table pending_actions_new rename to pending_actions");
     })();
   }
-  // a crash mid-action leaves it 'running' forever; let it be tried again
-  d.exec("update pending_actions set status = 'pending' where status = 'running'");
+  // a crash mid-action leaves it 'running'; it may have half-happened, so don't offer it again blindly
+  d.exec("update pending_actions set status = 'failed', result = 'Interrupted by a restart. Ask Sal to try again.' where status = 'running'");
 }
 
 let db: Database.Database | undefined;

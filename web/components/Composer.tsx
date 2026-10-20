@@ -38,6 +38,11 @@ export default function Composer({
   const recorder = useRef<MediaRecorder | null>(null);
   const cancelled = useRef(false);
   const blurTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // the recorder's stop handler outlives the render it was made in; read photos through a ref
+  const attachmentsRef = useRef<Attachment[]>([]);
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     const el = input.current;
@@ -131,10 +136,12 @@ export default function Composer({
           const form = new FormData();
           form.set("audio", new Blob(chunks, { type: rec.mimeType || "audio/webm" }), "voice");
           const { text: said } = await api<{ text: string }>("/api/transcribe", { method: "POST", body: form });
+          const sending = attachmentsRef.current;
           if (!said) {
             setError("Couldn't make out any words. Try again?");
-          } else if (await onSend(said, attachments.map((a) => a.id), true)) {
-            setAttachments([]);
+          } else if (await onSend(said, sending.map((a) => a.id), true)) {
+            const sent = new Set(sending.map((a) => a.id));
+            setAttachments((all) => all.filter((a) => !sent.has(a.id)));
           } else {
             // keep what was said so it isn't lost
             setText((t) => (t ? `${t} ${said}` : said));
