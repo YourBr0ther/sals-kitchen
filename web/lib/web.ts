@@ -85,6 +85,16 @@ export class HttpStatusError extends Error {
  * the request runs on their infrastructure, so it never touches the home network.
  */
 export async function fetchViaService(url: string): Promise<{ title: string; text: string }> {
+  // the service is hit-or-miss on heavily protected sites; one retry catches most misses
+  try {
+    return await fetchViaServiceOnce(url);
+  } catch {
+    await new Promise((r) => setTimeout(r, 2000));
+    return fetchViaServiceOnce(url);
+  }
+}
+
+async function fetchViaServiceOnce(url: string): Promise<{ title: string; text: string }> {
   const res = await fetch(`${config.nanogpt.url}/api/web`, {
     method: "POST",
     headers: { Authorization: `Bearer ${config.llm.apiKey}`, "Content-Type": "application/json" },

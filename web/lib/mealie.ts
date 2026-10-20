@@ -102,12 +102,21 @@ export async function getRecipe(slug: string) {
 }
 
 /** A recipe already saved from this page, if any. */
-export async function findBySourceUrl(url: string): Promise<RecipeSummary | undefined> {
+export async function findBySourceUrl(raw: string): Promise<RecipeSummary | undefined> {
+  let url: string;
+  try {
+    url = new URL(raw).toString(); // percent-encodes quotes; backslashes become slashes
+  } catch {
+    return;
+  }
   const variants = new Set([url, url.replace(/\/$/, ""), url.endsWith("/") ? url : `${url}/`]);
   for (const v of variants) {
-    const params = new URLSearchParams({ perPage: "1", page: "1", queryFilter: `orgURL = "${v.replace(/"/g, '\\"')}"` });
-    const data = await call<{ items: RawRecipe[] }>(`/api/recipes?${params}`);
-    if (data.items.length) return summarize(data.items[0]);
+    // the value goes inside Mealie's filter syntax, so never let quotes or backslashes in
+    if (/["\\]/.test(v)) continue;
+    const params = new URLSearchParams({ perPage: "1", page: "1", queryFilter: `orgURL = "${v}"` });
+    const data = await call<{ items: (RawRecipe & { orgURL?: string | null })[] }>(`/api/recipes?${params}`);
+    const hit = data.items.find((r) => r.orgURL === v);
+    if (hit) return summarize(hit);
   }
 }
 
