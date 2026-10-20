@@ -11,7 +11,9 @@ import PastConversations from "./PastConversations";
 import ProfilesView, { FavesCard, type ProfileEntry } from "./ProfilesView";
 import { useInstall, useOnline } from "./Pwa";
 import RecipeSheet from "./RecipeSheet";
+import GroceryList from "./GroceryList";
 import SettingsView from "./SettingsView";
+import TimerTray from "./TimerTray";
 import { api, jsonInit } from "./util";
 import WeekTicket from "./WeekTicket";
 
@@ -34,6 +36,7 @@ export default function Kitchen({ me }: { me: User }) {
   const [notice, setNotice] = useState("");
   const [showIosHelp, setShowIosHelp] = useState(false);
   const [recipe, setRecipe] = useState<string | null>(null);
+  const [groceries, setGroceries] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsError, setSettingsError] = useState("");
   // bumped when something may have changed the kitchen list or the household log
@@ -72,6 +75,13 @@ export default function Kitchen({ me }: { me: User }) {
     const t = setTimeout(() => {
       const fromUrl = new URLSearchParams(window.location.search).get("tab") as Tab | null;
       if (fromUrl && TABS.includes(fromUrl) && fromUrl !== "chat") setTab(fromUrl);
+      // the Groceries shortcut opens this week's list straight away
+      if (new URLSearchParams(window.location.search).get("list")) {
+        const d = new Date();
+        d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+        setGroceries(d.toLocaleDateString("en-CA"));
+        window.history.replaceState(null, "", "/?tab=week");
+      }
     }, 0);
     return () => clearTimeout(t);
   }, []);
@@ -257,6 +267,7 @@ export default function Kitchen({ me }: { me: User }) {
           onNext={() => week && setWeekStart(shift(week.start, 7))}
           onThisWeek={() => setWeekStart(undefined)}
           onOpenRecipe={setRecipe}
+          onOpenGroceries={setGroceries}
         />
         <PantryCard version={kitchenVersion} />
         <ActivityCard version={kitchenVersion} />
@@ -291,7 +302,8 @@ export default function Kitchen({ me }: { me: User }) {
         <button className="item" onClick={() => switchTab("settings")}><GearIcon />Settings and reminders</button>
         <button className="item" onClick={signOut}><PowerIcon />Switch person</button>
       </div>
-      {recipe && <RecipeSheet slug={recipe} onClose={() => setRecipe(null)} />}
+      {groceries && <GroceryList start={groceries} onClose={() => setGroceries(null)} />}
+      {recipe ? <RecipeSheet slug={recipe} onClose={() => setRecipe(null)} onPlanned={() => onChanged(["week"])} /> : <TimerTray onOpen={setRecipe} />}
     </div>
   );
 }

@@ -1,14 +1,15 @@
 "use client";
 
 import "@/app/recipe.css";
-import { Fragment, type ReactNode, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import type { RecipeDetail, RecipeLine } from "@/lib/mealie";
 import { findDurations, formatAmount, scaleLine } from "@/lib/scale";
 import { XIcon } from "./icons";
-import { api } from "./util";
+import { cancelTimer, clock, startTimer, type Timer, useTimers } from "./timers";
+import { api, jsonInit } from "./util";
+import type { Week } from "@/lib/week";
 
-type Timer = { id: number; key: string; label: string; endsAt: number; done: boolean };
 type Section = { title?: string; items: { n: number; num: number; text: string }[] };
 
 // when a recipe doesn't say how many it serves, the stepper scales by these instead
@@ -18,14 +19,6 @@ const MAX_SERVINGS = 48;
 const subscribeNothing = () => () => {};
 /** False during the server render and hydration, true after, without a state flip in an effect. */
 const useOnClient = () => useSyncExternalStore(subscribeNothing, () => true, () => false);
-
-const pad = (n: number) => String(n).padStart(2, "0");
-function clock(ms: number): string {
-  const s = Math.max(0, Math.ceil(ms / 1000));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
-}
 
 /** Group lines under their headings, numbering the lines straight through. */
 function sections(lines: RecipeLine[]): Section[] {
@@ -59,96 +52,6 @@ function trapTab(e: KeyboardEvent, root: HTMLElement | null) {
     e.preventDefault();
     first.focus();
   }
-}
-
-/** Three short beeps. The context was unlocked by the tap that started the timer. */
-function beep(ctx: AudioContext | null) {
-  if (!ctx) return;
-  void ctx.resume().catch(() => {});
-  const t = ctx.currentTime + 0.05;
-  for (let i = 0; i < 3; i++) {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = 880;
-    const at = t + i * 0.32;
-    gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(0.35, at + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.22);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(at);
-    osc.stop(at + 0.25);
-  }
-}
-
-function useTimers() {
-  const [timers, setTimers] = useState<Timer[]>([]);
-  const [now, setNow] = useState(0);
-  const handles = useRef(new Map<number, ReturnType<typeof setTimeout>>());
-  const audio = useRef<AudioContext | null>(null);
-  const nextId = useRef(1);
-
-  const running = timers.some((t) => !t.done);
-  useEffect(() => {
-    if (!running) return;
-    const tick = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(tick);
-  }, [running]);
-
-  useEffect(() => {
-    const pending = handles.current;
-    return () => {
-      pending.forEach(clearTimeout);
-      pending.clear();
-      void audio.current?.close().catch(() => {});
-    };
-  }, []);
-
-  const finish = useCallback((id: number) => {
-    handles.current.delete(id);
-    setNow(Date.now());
-    setTimers((ts) => ts.map((t) => (t.id === id ? { ...t, done: true } : t)));
-    navigator.vibrate?.([300, 150, 300, 150, 300]);
-    beep(audio.current);
-  }, []);
-
-  // a locked or backgrounded phone holds timeouts back; on return, ring anything already up
-  const timersRef = useRef(timers);
-  useEffect(() => {
-    timersRef.current = timers;
-  }, [timers]);
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      for (const t of timersRef.current) {
-        if (!t.done && t.endsAt <= Date.now() && handles.current.has(t.id)) {
-          clearTimeout(handles.current.get(t.id));
-          finish(t.id);
-        }
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [finish]);
-
-  function start(key: string, label: string, seconds: number) {
-    if (timers.some((t) => t.key === key && !t.done)) return;
-    // iOS only plays sound from a context first started during a tap, so start it now
-    if (!audio.current && typeof AudioContext !== "undefined") audio.current = new AudioContext();
-    void audio.current?.resume().catch(() => {});
-    const id = nextId.current++;
-    const t0 = Date.now();
-    setNow(t0);
-    setTimers((ts) => [...ts.filter((t) => t.key !== key), { id, key, label, endsAt: t0 + seconds * 1000, done: false }]);
-    handles.current.set(id, setTimeout(() => finish(id), seconds * 1000));
-  }
-
-  function cancel(id: number) {
-    clearTimeout(handles.current.get(id));
-    handles.current.delete(id);
-    setTimers((ts) => ts.filter((t) => t.id !== id));
-  }
-
-  return { timers, now, start, cancel };
 }
 
 const wakeLockSupported = () => "wakeLock" in navigator;
@@ -202,7 +105,7 @@ const CheckIcon = () => (
   </svg>
 );
 
-export default function RecipeSheet({ slug, onClose }: { slug: string; onClose: () => void }) {
+export default function RecipeSheet({ slug, onClose, onPlanned }: { slug: string; onClose: () => void; onPlanned?: () => void }) {
   const onClient = useOnClient();
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -240,14 +143,14 @@ export default function RecipeSheet({ slug, onClose }: { slug: string; onClose: 
     <div className="rs-root">
       <div className="rs-scrim" onClick={onClose} aria-hidden="true" />
       <div className="rs" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel} tabIndex={-1}>
-        <Card key={slug} slug={slug} onClose={onClose} titleId={titleId} />
+        <Card key={slug} slug={slug} onClose={onClose} titleId={titleId} onPlanned={onPlanned} />
       </div>
     </div>,
     document.body,
   );
 }
 
-function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; titleId: string }) {
+function Card({ slug, onClose, titleId, onPlanned }: { slug: string; onClose: () => void; titleId: string; onPlanned?: () => void }) {
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -256,7 +159,12 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
   const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [doneSteps, setDoneSteps] = useState<Set<number>>(() => new Set());
   const [photoFailed, setPhotoFailed] = useState(false);
-  const { timers, now, start, cancel } = useTimers();
+  const { timers: allTimers, now } = useTimers();
+  // this card's timers; others keep running in the tray
+  const timers = allTimers.filter((t) => t.slug === slug);
+  const start = (key: string, label: string, seconds: number) =>
+    startTimer({ slug, recipe: recipe?.name ?? "Recipe", key: `${slug}:${key}`, label, seconds });
+  const cancel = cancelTimer;
   const wake = useWakeLock();
 
   useEffect(() => {
@@ -304,7 +212,9 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
           ))}
         </ul>
       )}
-      {timers.some((t) => !t.done) && <p className="rs-wake-note">Timers run while this card is open. Turn on Keep screen on so the phone doesn&apos;t lock.</p>}
+      {timers.some((t) => !t.done) && !wake.on && wake.supported && (
+        <p className="rs-wake-note">Timers keep going if you close the card. Turn on Keep screen on so you can watch them here.</p>
+      )}
       <p className="sr-only" aria-live="assertive">
         {timers.filter((t) => t.done).map((t) => `${t.label} timer is done.`).join(" ")}
       </p>
@@ -418,7 +328,7 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
                         </button>
                         {/* tapping the words marks the step too; the number button is the keyboard way */}
                         <p onClick={() => toggleStep(it.n)}>
-                          <StepText text={it.text} num={it.num} timers={timers} now={now} onStart={start} />
+                          <StepText text={it.text} num={it.num} prefix={`${slug}:`} timers={timers} now={now} onStart={start} />
                         </p>
                       </li>
                     );
@@ -449,6 +359,8 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
           </section>
         )}
 
+        <PlanIt slug={recipe.slug} onPlanned={onPlanned} />
+
         <footer className="rs-links">
           <a href={recipe.mealieUrl} target="_blank" rel="noreferrer">Open in Mealie</a>
           {recipe.sourceUrl && <a href={recipe.sourceUrl} target="_blank" rel="noreferrer noopener">Original recipe</a>}
@@ -462,12 +374,15 @@ function Card({ slug, onClose, titleId }: { slug: string; onClose: () => void; t
 function StepText({
   text,
   num,
+  prefix,
   timers,
   now,
   onStart,
 }: {
   text: string;
   num: number;
+  /** timers are app-wide, so their keys carry the recipe */
+  prefix: string;
   timers: Timer[];
   now: number;
   onStart: (key: string, label: string, seconds: number) => void;
@@ -477,7 +392,7 @@ function StepText({
   findDurations(text).forEach((d, i) => {
     parts.push(text.slice(at, d.start));
     const key = `${num}:${i}`;
-    const t = timers.find((x) => x.key === key);
+    const t = timers.find((x) => x.key === prefix + key);
     const running = t && !t.done;
     parts.push(
       <button
@@ -498,4 +413,69 @@ function StepText({
   });
   parts.push(text.slice(at));
   return <>{parts}</>;
+}
+
+/** Put this recipe on a night in the next two weeks, right from the card. */
+function PlanIt({ slug, onPlanned }: { slug: string; onPlanned?: () => void }) {
+  const [nights, setNights] = useState<Week["nights"] | null>(null);
+  const [date, setDate] = useState("");
+  const [state, setState] = useState<{ busy: boolean; note: string; ok: boolean }>({ busy: false, note: "", ok: false });
+
+  async function load() {
+    setState({ busy: true, note: "", ok: false });
+    try {
+      const first = await api<Week>("/api/week");
+      const next = await api<Week>(`/api/week?start=${addDays(first.start, 7)}`);
+      const today = new Date().toLocaleDateString("en-CA");
+      const upcoming = [...first.nights, ...next.nights].filter((n) => n.date >= today);
+      setNights(upcoming);
+      // the first open cooking night is the likely pick
+      setDate((upcoming.find((n) => n.cooking && !n.title) ?? upcoming[0])?.date ?? "");
+      setState({ busy: false, note: "", ok: false });
+    } catch (e) {
+      setState({ busy: false, note: (e as Error).message, ok: false });
+    }
+  }
+
+  async function plan() {
+    const n = nights?.find((x) => x.date === date);
+    if (!n) return;
+    setState({ busy: true, note: "", ok: false });
+    try {
+      await api("/api/week", jsonInit("PATCH", { date, recipeSlug: slug }));
+      setState({ busy: false, note: `It's on ${n.day} ${shortDay(date)}.${n.title ? ` That replaces ${n.title}.` : ""}`, ok: true });
+      setNights(null);
+      onPlanned?.();
+    } catch (e) {
+      setState({ busy: false, note: (e as Error).message, ok: false });
+    }
+  }
+
+  return (
+    <section className="rs-plan" aria-label="Put it on a night">
+      {nights ? (
+        <div className="rs-plan-row">
+          <label className="sr-only" htmlFor={`plan-${slug}`}>Night</label>
+          <select id={`plan-${slug}`} value={date} onChange={(e) => setDate(e.target.value)}>
+            {nights.map((n) => (
+              <option key={n.date} value={n.date}>
+                {n.day} {shortDay(n.date)}{n.title ? `: ${n.title}` : n.cooking ? ", open" : ", no cooking"}
+              </option>
+            ))}
+          </select>
+          <button type="button" className="push" onClick={() => void plan()} disabled={state.busy || !date}>{state.busy ? "Putting it on…" : "Put it on"}</button>
+        </div>
+      ) : (
+        <button type="button" className="push alt" onClick={() => void load()} disabled={state.busy}>{state.busy ? "Pulling the week…" : "Put it on a night"}</button>
+      )}
+      {state.note && <p className={state.ok ? "ok-line" : "error-line"} role={state.ok ? "status" : "alert"}>{state.note}</p>}
+    </section>
+  );
+}
+
+const shortDay = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+function addDays(date: string, n: number) {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
 }

@@ -238,3 +238,12 @@
 :root[data-theme="dark"] .rs-num { border-color: var(--mustard); color: var(--mustard); }
 :root[data-theme="dark"] .rs-steps li.done .rs-num { background: var(--mustard); color: var(--rs-on-mustard); }
 :root[data-theme="dark"] .rs-links a:not(:first-child) { color: var(--forest-ink); }
+
+/* put it on a night */
+.rs-plan { margin: 20px 0 4px; display: grid; gap: 8px; }
+.rs-plan-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.rs-plan select {
+  flex: 1 1 200px; min-height: 44px; border: 1.5px solid var(--line); border-radius: 12px; padding: 8px 10px;
+  font: inherit; font-size: 16px; background: var(--field, #fff); color: var(--forest-ink);
+}
+.rs-plan .push { flex: none; }

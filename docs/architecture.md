@@ -104,6 +104,7 @@ When an approved action fails, the chat asks Sal to follow up straight away, so 
 | Last made | `PATCH /api/recipes/{slug}/last-made` (Mealie keeps it per household) |
 | Rating | `POST /api/users/{id}/ratings/{slug}` for the token's user |
 | Timeline note | `POST /api/recipes/timeline/events` |
+| Check an item | `GET` then `PUT /api/households/shopping/items/{id}` with `checked` (only items on a list this app made) |
 | Recipe photo | `GET /api/media/recipes/{id}/images/min-original.webp`, passed through `/api/recipes/{slug}/image` |
 
 Auth is a long-lived API token, sent as `Authorization: Bearer <token>`. Checked against Mealie v3.29.
@@ -160,7 +161,9 @@ Each person's memory with Sal is separate. Nothing from one person's chats or me
 ## PWA
 
 - **Install:** the manifest has standalone display, portrait orientation, regular and maskable icons, and shortcuts for Chat and This week (`/?tab=week`). Apple's meta tags make the iPhone home-screen app open full screen.
-- **Service worker** (`public/sw.js`): pages always load from the network, with `offline.html` when there's none. Build assets, icons, and fonts are cached, since their URLs change whenever they do. Nothing under `/api` is cached, so no one's chat is ever stored on the device.
+- **Service worker** (`public/sw.js`): pages always load from the network, with `offline.html` when there's none. Build assets, icons, and fonts are cached, since their URLs change whenever they do. Under `/api`, only recipe cards and their photos are kept (network first, the last 60), since they're household recipes and a card should open in a kitchen with no signal. Chats, profiles, memories, and everything else under `/api` are never cached, so no one's conversation is stored on the device.
+- **Offline grocery list:** the checklist keeps its last copy of each week's list in the phone's local storage. Check-offs made offline wait there and go to Mealie, oldest first, when the connection is back.
+- **Timers:** cooking timers live in one app-wide store saved to local storage, so they outlast the recipe card and a reload. A timer that ran out while the app was closed shows as done without beeping.
 - **Install prompt:** the menu offers "Add Sal to your home screen". Chrome and Android show their install prompt, and on iPhone a tap shows the Share → Add to Home Screen steps.
 - **Offline:** an offline banner appears, and when the connection comes back the app reloads the chat, the week, and profiles.
 - **Reminders:** the service worker shows pushed reminders and opens the app on the right tab when one is tapped. Endpoints are limited to the browsers' push services. iPhones only allow push for the home-screen app.

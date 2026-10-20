@@ -23,6 +23,7 @@ export default function manifest(): MetadataRoute.Manifest {
     shortcuts: [
       { name: "Talk to Sal", short_name: "Chat", url: "/?tab=chat", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
       { name: "This week's dinners", short_name: "This week", url: "/?tab=week", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+      { name: "Grocery list", short_name: "Groceries", url: "/?tab=week&list=1", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
     ],
   };
 }

@@ -27,6 +27,7 @@ export default function WeekTicket({
   onNext,
   onThisWeek,
   onOpenRecipe,
+  onOpenGroceries,
 }: {
   me: User;
   week: Week | null;
@@ -37,6 +38,7 @@ export default function WeekTicket({
   onNext: () => void;
   onThisWeek: () => void;
   onOpenRecipe: (slug: string) => void;
+  onOpenGroceries: (start: string) => void;
 }) {
   const [sending, setSending] = useState(false);
   const [shopping, setShopping] = useState(false);
@@ -193,9 +195,9 @@ export default function WeekTicket({
             </>
           )}
           {week.groceries && (
-            <a className="list-link" href={week.groceries.url} target="_blank" rel="noreferrer">
-              Grocery list in Mealie, {week.groceries.count} item{week.groceries.count === 1 ? "" : "s"}
-            </a>
+            <button className="list-link" onClick={() => onOpenGroceries(week.start)}>
+              Open the grocery list ({week.groceries.count} item{week.groceries.count === 1 ? "" : "s"})
+            </button>
           )}
           {note && <p className="msgline" role="status">{note}</p>}
         </footer>

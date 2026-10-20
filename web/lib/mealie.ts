@@ -538,6 +538,18 @@ export async function addShoppingItems(listId: string, items: { text: string; ai
   return [...res.createdItems, ...res.updatedItems].map((i) => i.id);
 }
 
+/** Label names by id, for showing a list grouped by aisle. */
+export async function labelNames(): Promise<Map<string, string>> {
+  const data = await call<{ items: { id: string; name: string }[] }>("/api/groups/labels?perPage=200&page=1");
+  return new Map(data.items.map((l) => [l.id, l.name]));
+}
+
+/** Check an item off (or back on). Mealie wants the whole item back, so read it first. */
+export async function setShoppingItemChecked(id: string, checked: boolean) {
+  const item = await call<Record<string, unknown>>(`/api/households/shopping/items/${encodeURIComponent(id)}`);
+  await call(`/api/households/shopping/items/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ ...item, checked }) });
+}
+
 export async function deleteShoppingItems(ids: string[]) {
   if (!ids.length) return;
   const q = new URLSearchParams();

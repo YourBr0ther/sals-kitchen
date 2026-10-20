@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node lib/scale.test.mjs && DATA_DIR=$(mktemp -d) TZ=America/New_York tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -28,6 +29,7 @@
     "@types/web-push": "^3.6.4",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "tsx": "^4.20.6"
   }
 }

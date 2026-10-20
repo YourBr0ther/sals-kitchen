@@ -1,12 +1,17 @@
 // Sal's Kitchen service worker.
 // Pages always come from the network (they depend on who's signed in); if the network is
 // gone, show the offline page. Build assets, icons, and fonts are cached because their
-// URLs change whenever their contents do. Nothing under /api is ever cached.
+// URLs change whenever their contents do. Under /api, only recipe cards and their photos
+// are kept (household recipes, so a card still opens with no signal in the kitchen).
+// Chats, profiles, and everything else under /api are never cached.
 
 // the page registers /sw.js?v=<build id>, so every deploy installs a new worker and cache
 const VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
 const STATIC_CACHE = `sal-static-${VERSION}`;
 const OFFLINE_URL = "/offline.html";
+// recipe cards outlive deploys; the newest are kept
+const RECIPE_CACHE = "sal-recipes";
+const MAX_RECIPES = 60;
 const PRECACHE = [OFFLINE_URL, "/icon.svg", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/icon-180.png"];
 
 self.addEventListener("install", (event) => {
@@ -22,7 +27,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("sal-") && k !== STATIC_CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("sal-") && k !== STATIC_CACHE && k !== RECIPE_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -36,6 +41,10 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+  if (url.origin === self.location.origin && /^\/api\/recipes\/[a-z0-9-]+(\/image)?$/.test(url.pathname)) {
+    event.respondWith(recipeFromNetworkOrCache(event, req));
+    return;
+  }
   if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) return;
 
   if (req.mode === "navigate") {
@@ -117,3 +126,25 @@ self.addEventListener("notificationclick", (event) => {
     }),
   );
 });
+
+/** Fresh from the server when there's signal; the last copy when there isn't. */
+async function recipeFromNetworkOrCache(event, req) {
+  const cache = await caches.open(RECIPE_CACHE);
+  try {
+    const res = await fetch(req);
+    if (res.ok) {
+      const copy = res.clone();
+      event.waitUntil(
+        cache.put(req, copy).then(async () => {
+          const keys = await cache.keys();
+          await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_RECIPES)).map((k) => cache.delete(k)));
+        }),
+      );
+    }
+    return res;
+  } catch (e) {
+    const hit = await cache.match(req);
+    if (hit) return hit;
+    throw e;
+  }
+}

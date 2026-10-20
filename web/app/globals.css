@@ -523,7 +523,7 @@ input, textarea { font: inherit; color: inherit; }
 .push.alt { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
 .push.alt:hover { background: var(--mint); }
 .push.alt:disabled { opacity: .5; background: transparent; }
-.list-link { font-family: var(--font-body); font-size: 13px; color: var(--accent); font-weight: 600; text-underline-offset: 3px; }
+.list-link { font-family: var(--font-body); font-size: 14px; color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; border: 0; background: none; padding: 8px 0; text-align: left; min-height: 40px; }
 
 /* ---------- kitchen list and log ---------- */
 .card-sub { margin: -6px 0 10px; font-size: 12px; color: var(--muted); }
@@ -556,3 +556,26 @@ input, textarea { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .speak.on svg { animation: none; }
 }
+
+/* ---------- cooking timers, while no recipe card is open ---------- */
+.timer-tray {
+  position: fixed; z-index: 20; right: 16px; bottom: 16px; display: grid; gap: 8px; width: min(340px, calc(100vw - 32px));
+}
+.tt {
+  display: flex; align-items: stretch; background: var(--forest); color: #fff; border-radius: 16px;
+  box-shadow: 0 10px 24px -10px var(--shadow); overflow: hidden;
+}
+.tt.done { background: var(--tomato); animation: pulse .8s ease-in-out infinite alternate; }
+.tt-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; border: 0; background: none; color: inherit; text-align: left; padding: 10px 14px; min-height: 52px; }
+.tt-clock { font-family: var(--font-ticket); font-weight: 700; font-size: 18px; min-width: 4.5ch; }
+.tt-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.tt-what small { display: block; font-weight: 400; opacity: .8; overflow: hidden; text-overflow: ellipsis; }
+.tt-x { border: 0; background: rgba(255,255,255,.12); color: inherit; width: 48px; display: grid; place-items: center; }
+.tt-x svg { width: 18px; height: 18px; }
+@media (max-width: 760px) {
+  /* under the header, where it can't cover the message box */
+  .timer-tray { left: 12px; right: 12px; width: auto; bottom: auto; top: calc(64px + env(safe-area-inset-top)); }
+  .app.keyboard .timer-tray { display: none; }
+  .app[data-tab="week"] .timer-tray { top: calc(12px + env(safe-area-inset-top)); }
+}
+@media (prefers-reduced-motion: reduce) { .tt.done { animation: none; } }

@@ -16,7 +16,7 @@ The goal is simple. We want to cook at home more, and planning was always the pa
 
 **Plans the week.** The week is a kitchen ticket next to the chat. Sal reads a shared calendar and crosses off busy evenings (practice, date night, travel). He fills the rest with meals and writes them straight onto the ticket. Anyone can flip a night on or off, or clear a dish, with one tap. When it looks right, a grown-up taps "Send to Mealie" and each night becomes a dinner on Mealie's meal plan. Sending again replaces those dinners instead of duplicating them.
 
-**Writes the grocery list.** Once dinners are on the ticket, tap "Make the grocery list" (or ask Sal). He reads every recipe left this week, scales each one to the number of people eating, and combines what they share, so two recipes with lemons become one line. Amounts come out the way a store sells them. Salt, pepper, cooking oil, and anything on the kitchen list stay off. The list goes into Mealie's shopping lists, sorted by aisle. Making it again replaces it, and anything you already checked off stays checked.
+**Writes the grocery list.** Once dinners are on the ticket, tap "Make the grocery list" (or ask Sal). He reads every recipe left this week, scales each one to the number of people eating, and combines what they share, so two recipes with lemons become one line. Amounts come out the way a store sells them. Salt, pepper, cooking oil, and anything on the kitchen list stay off. The list goes into Mealie's shopping lists, sorted by aisle. Making it again replaces it, and anything you already checked off stays checked. At the store, open it from the week (or the Groceries home-screen shortcut) as a checklist in the app. It opens with no signal too, and check-offs made offline sync when you're back.
 
 **Knows what's in the kitchen.** The household shares a kitchen list. Tell Sal you bought chicken thighs, or send him a photo of the fridge, and he adds them. He plans around what's there, so the spinach gets used before it turns.
 
@@ -30,7 +30,7 @@ The goal is simple. We want to cook at home more, and planning was always the pa
 
 **Remembers each of you, separately.** Sal keeps a private memory for each person: your schedule, your goals, what's in your kitchen. Long conversations get summarized so he keeps the thread without rereading everything. You can see and delete what he remembers about you on the Profiles screen, and nobody else can see it.
 
-**Puts a recipe card in your hand.** Tap a dinner on the ticket, or a recipe link in the chat, and the recipe opens in the app. Change the servings and the amounts follow. Tick off ingredients as they go in, tap steps as you finish them, and tap any time in a step ("simmer 20 minutes") to start a timer. "Keep screen on" stops the phone from dimming with flour on your hands.
+**Puts a recipe card in your hand.** Tap a dinner on the ticket, or a recipe link in the chat, and the recipe opens in the app. Change the servings and the amounts follow. Tick off ingredients as they go in, tap steps as you finish them, and tap any time in a step ("simmer 20 minutes") to start a timer. Timers keep running when you close the card, in a small tray you can tap to get back. "Keep screen on" stops the phone from dimming with flour on your hands, and "Put it on a night" adds the recipe to the week. Cards you've opened before still open without signal.
 
 **Keeps everyone in step.** Each person talks to Sal privately, but the kitchen log on the week screen shows what everyone did: who planned what, who made the list, how dinners went. Sal reads it too, so he'll tell you Jordan already put tacos on Thursday.
 
@@ -104,6 +104,15 @@ docker run -p 3000:3000 -v sal-data:/data --env-file .env.local sals-kitchen
 ```
 
 The SQLite database and uploaded photos live in `/data`. `GET /api/health` is there for probes.
+
+### Tests
+
+```sh
+cd web
+npm test
+```
+
+That runs the ingredient scaling checks, the chat history and past-conversation tests, and the reminder scheduler tests against a throwaway database.
 
 ## Configuration
 
