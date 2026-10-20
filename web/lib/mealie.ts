@@ -1,20 +1,30 @@
 import { config, mealieConfigured } from "./config";
-import { fetchImage, fetchRecipeData } from "./web";
+import { type Recipe, toSchemaJson } from "./recipe";
+import { fetchImage } from "./web";
 
 export class MealieError extends Error {}
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!mealieConfigured()) throw new MealieError("Mealie isn't connected. Set MEALIE_URL and MEALIE_API_TOKEN.");
-  const res = await fetch(`${config.mealie.url}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${config.mealie.token}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...init.headers,
-    },
-    signal: AbortSignal.timeout(30_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${config.mealie.url}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${config.mealie.token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...init.headers,
+      },
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (e) {
+    const timedOut = (e as Error).name === "TimeoutError";
+    throw new MealieError(timedOut ? "Mealie took too long to answer." : "Couldn't reach Mealie. It may be restarting; try again in a minute.");
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new MealieError("Mealie turned down the API token. It may have been deleted or expired.");
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new MealieError(`Mealie ${init.method ?? "GET"} ${path} failed (${res.status}): ${body.slice(0, 300)}`);
@@ -91,34 +101,44 @@ export async function getRecipe(slug: string) {
   };
 }
 
+/** A recipe already saved from this page, if any. */
+export async function findBySourceUrl(url: string): Promise<RecipeSummary | undefined> {
+  const variants = new Set([url, url.replace(/\/$/, ""), url.endsWith("/") ? url : `${url}/`]);
+  for (const v of variants) {
+    const params = new URLSearchParams({ perPage: "1", page: "1", queryFilter: `orgURL = "${v.replace(/"/g, '\\"')}"` });
+    const data = await call<{ items: RawRecipe[] }>(`/api/recipes?${params}`);
+    if (data.items.length) return summarize(data.items[0]);
+  }
+}
+
 /**
- * Save a web recipe. The page is fetched by this app, not Mealie, so a link can't
- * steer Mealie into the home network: Mealie only ever sees the recipe data.
+ * Save a web recipe. This app fetches and reads the page itself (public addresses only),
+ * so a link can't steer Mealie into the home network: Mealie only ever receives the recipe data.
  */
-export async function importRecipeFromUrl(url: string): Promise<RecipeSummary> {
-  const { recipe, imageUrl } = await fetchRecipeData(url);
+export async function importRecipe(recipe: Recipe): Promise<{ recipe: RecipeSummary; existed: boolean }> {
+  const existing = await findBySourceUrl(recipe.sourceUrl);
+  if (existing) return { recipe: existing, existed: true };
   const slug = await call<string>("/api/recipes/create/html-or-json", {
     method: "POST",
-    // Mealie only accepts the JSON with a schema.org context; it may have lived on a parent @graph
-    body: JSON.stringify({ data: JSON.stringify({ "@context": "https://schema.org", ...recipe }), includeTags: true, includeCategories: true }),
+    body: JSON.stringify({ data: JSON.stringify(toSchemaJson(recipe)), includeTags: true, includeCategories: true }),
   });
-  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ orgURL: url }) }).catch(() => {});
-  if (imageUrl) {
-    const img = await fetchImage(imageUrl).catch(() => null);
+  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ orgURL: recipe.sourceUrl }) });
+  if (recipe.imageUrl) {
+    const img = await fetchImage(recipe.imageUrl).catch(() => null);
     if (img) {
       const form = new FormData();
       form.set("image", new Blob([new Uint8Array(img.bytes)]), `image.${img.ext}`);
       form.set("extension", img.ext);
-      await fetch(`${config.mealie.url}/api/recipes/${encodeURIComponent(slug)}/image`, {
+      const res = await fetch(`${config.mealie.url}/api/recipes/${encodeURIComponent(slug)}/image`, {
         method: "PUT",
         headers: { Authorization: `Bearer ${config.mealie.token}` },
         body: form,
         signal: AbortSignal.timeout(30_000),
-      }).catch(() => {});
+      }).catch(() => null);
+      if (!res?.ok) console.warn(`[mealie] photo upload for ${slug} failed (${res?.status ?? "network"})`);
     }
   }
-  const r = await call<RawRecipe>(`/api/recipes/${encodeURIComponent(slug)}`);
-  return summarize(r);
+  return { recipe: summarize(await call<RawRecipe>(`/api/recipes/${encodeURIComponent(slug)}`)), existed: false };
 }
 
 export interface MealPlanEntry {

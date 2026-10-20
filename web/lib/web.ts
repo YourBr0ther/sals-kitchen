@@ -73,7 +73,33 @@ export async function assertPublicUrl(raw: string): Promise<URL> {
 
 const MAX_BYTES = 3_000_000;
 
-async function fetchText(raw: string): Promise<string> {
+/** The site answered, but with an error status (blocked, missing, down). */
+export class HttpStatusError extends Error {
+  constructor(readonly status: number) {
+    super(`The page returned ${status}.`);
+  }
+}
+
+/**
+ * Fetch a page through NanoGPT's fetcher (Sofya). Used when a site blocks us directly;
+ * the request runs on their infrastructure, so it never touches the home network.
+ */
+export async function fetchViaService(url: string): Promise<{ title: string; text: string }> {
+  const res = await fetch(`${config.nanogpt.url}/api/web`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.llm.apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: "sofya", operation: "fetch", urls: [url] }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`Couldn't fetch the page (${res.status}).`);
+  const body = (await res.json()) as { data?: { title?: string; content?: string; success?: boolean; error?: string }[] };
+  const item = body.data?.[0];
+  if (!item?.content || item.success === false) throw new Error(item?.error || "Couldn't fetch the page.");
+  return { title: item.title ?? "", text: item.content };
+}
+
+/** Fetch a page's HTML through the public-only connection, following redirects one checked hop at a time. */
+export async function fetchText(raw: string): Promise<{ html: string; finalUrl: string }> {
   let url = await assertPublicUrl(raw);
   for (let hop = 0; hop < 5; hop++) {
     const res = await undiciFetch(url, {
@@ -86,9 +112,9 @@ async function fetchText(raw: string): Promise<string> {
       url = await assertPublicUrl(new URL(res.headers.get("location")!, url).toString());
       continue;
     }
-    if (!res.ok) throw new Error(`The page returned ${res.status}.`);
+    if (!res.ok) throw new HttpStatusError(res.status);
     const reader = res.body?.getReader();
-    if (!reader) return "";
+    if (!reader) return { html: "", finalUrl: url.toString() };
     const chunks: Uint8Array[] = [];
     let size = 0;
     while (size < MAX_BYTES) {
@@ -98,114 +124,9 @@ async function fetchText(raw: string): Promise<string> {
       size += value.length;
     }
     reader.cancel().catch(() => {});
-    return Buffer.concat(chunks).toString("utf8");
+    return { html: Buffer.concat(chunks).toString("utf8"), finalUrl: url.toString() };
   }
   throw new Error("Too many redirects.");
-}
-
-type Json = Record<string, unknown>;
-
-function findRecipe(node: unknown): Json | undefined {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    for (const n of node) {
-      const r = findRecipe(n);
-      if (r) return r;
-    }
-    return;
-  }
-  const obj = node as Json;
-  const type = obj["@type"];
-  if (type === "Recipe" || (Array.isArray(type) && type.includes("Recipe"))) return obj;
-  return findRecipe(obj["@graph"]);
-}
-
-const textOf = (v: unknown): string[] => {
-  if (!v) return [];
-  if (typeof v === "string") return [v];
-  if (Array.isArray(v)) return v.flatMap(textOf);
-  const o = v as Json;
-  if (o.itemListElement) return textOf(o.itemListElement);
-  return o.text ? [String(o.text)] : o.name ? [String(o.name)] : [];
-};
-
-const decode = (s: string) =>
-  s
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-
-export async function readPage(url: string) {
-  const html = await fetchText(url);
-  for (const m of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
-    try {
-      const recipe = findRecipe(JSON.parse(m[1]));
-      if (recipe) {
-        return {
-          url,
-          kind: "recipe" as const,
-          name: decode(String(recipe.name ?? "")),
-          description: decode(String(recipe.description ?? "")).slice(0, 400),
-          totalTime: recipe.totalTime ?? null,
-          servings: textOf(recipe.recipeYield)[0] ?? null,
-          ingredients: textOf(recipe.recipeIngredient).map(decode).slice(0, 40),
-          steps: textOf(recipe.recipeInstructions).map(decode).slice(0, 25),
-        };
-      }
-    } catch {
-      // bad JSON-LD blocks are common; try the next one
-    }
-  }
-  const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() ?? "");
-  const text = decode(
-    html
-      .replace(/<(script|style|noscript|svg|nav|footer|header)[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " "),
-  ).trim();
-  return { url, kind: "page" as const, title, text: text.slice(0, 6000) };
-}
-
-const MEDIA_KEYS = new Set(["image", "thumbnailUrl", "video", "contentUrl", "embedUrl", "logo", "photo"]);
-
-/** Deep copy without any field that would make Mealie download something. */
-function stripMedia(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(stripMedia);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(Object.entries(v as Json).filter(([k]) => !MEDIA_KEYS.has(k)).map(([k, x]) => [k, stripMedia(x)]));
-  }
-  return v;
-}
-
-function firstImageUrl(v: unknown): string | null {
-  if (!v) return null;
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return firstImageUrl(v[0]);
-  const o = v as Json;
-  return typeof o.url === "string" ? o.url : typeof o.contentUrl === "string" ? o.contentUrl : null;
-}
-
-/**
- * Fetch a recipe page ourselves (public addresses only) and pull out its schema.org Recipe.
- * Mealie gets the data with every media URL removed, so it never fetches anything on its own.
- */
-export async function fetchRecipeData(url: string): Promise<{ recipe: Json; imageUrl: string | null }> {
-  const html = await fetchText(url);
-  for (const m of html.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
-    try {
-      const recipe = findRecipe(JSON.parse(m[1]));
-      if (recipe) {
-        const img = firstImageUrl(recipe.image);
-        return { recipe: stripMedia(recipe) as Json, imageUrl: img ? new URL(img, url).toString() : null };
-      }
-    } catch {
-      // try the next block
-    }
-  }
-  throw new Error("That page doesn't have a recipe Mealie can read.");
 }
 
 const IMAGE_TYPES: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };

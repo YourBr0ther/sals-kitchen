@@ -60,22 +60,24 @@ export default function ChatView({
   };
 
   const send = useCallback(
-    async (text: string, attachments: string[] = [], voice = false) => {
+    async (text: string, attachments: string[] = [], voice = false, followUp = false) => {
       setError("");
       stick.current = true;
-      const temp: VisibleMessage = {
-        id: -Date.now(),
-        role: "user",
-        content: text,
-        createdAt: new Date().toISOString(),
-        attachments,
-        voice,
-      };
-      setMessages((m) => [...(m ?? []), temp]);
+      if (!followUp) {
+        const temp: VisibleMessage = {
+          id: -Date.now(),
+          role: "user",
+          content: text,
+          createdAt: new Date().toISOString(),
+          attachments,
+          voice,
+        };
+        setMessages((m) => [...(m ?? []), temp]);
+      }
       setStreaming({ text: "", status: null });
 
       try {
-        const res = await fetch("/api/chat", jsonInit("POST", { text, attachments, voice }));
+        const res = await fetch("/api/chat", jsonInit("POST", { text, attachments, voice, followUp }));
         if (!res.ok || !res.body) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.error ?? `Sal didn't answer (${res.status}).`);
@@ -117,19 +119,29 @@ export default function ChatView({
     [onChanged],
   );
 
+  const [deciding, setDeciding] = useState<number | null>(null);
+
   async function decide(action: ActionView, approve: boolean) {
-    try {
-      const r = await api<{ action: ActionView; changed: string[]; message?: string }>(
-        `/api/actions/${action.id}`,
-        jsonInit("POST", { approve }),
-      );
-      setMessages((ms) =>
-        (ms ?? []).map((m) => (m.actions ? { ...m, actions: m.actions.map((a) => (a.id === action.id ? r.action : a)) } : m)),
-      );
-      if (r.changed?.length) onChanged(r.changed);
-    } catch (e) {
-      setError((e as Error).message);
+    setDeciding(action.id);
+    setError("");
+    // the action route answers 502 with the action attached when the save itself failed
+    const res = await fetch(`/api/actions/${action.id}`, jsonInit("POST", { approve }));
+    const r = (await res.json().catch(() => ({}))) as { action?: ActionView; changed?: string[]; error?: string };
+    setDeciding(null);
+    if (res.status === 401) {
+      window.location.assign("/login");
+      return;
     }
+    if (r.action) {
+      setMessages((ms) =>
+        (ms ?? []).map((m) => (m.actions ? { ...m, actions: m.actions.map((a) => (a.id === action.id ? r.action! : a)) } : m)),
+      );
+    } else {
+      setError(r.error ?? "That didn't work.");
+    }
+    if (r.changed?.length) onChanged(r.changed);
+    // let Sal react when a save fails, so the person isn't left looking at an error
+    if (r.action?.status === "failed") send("", [], false, true);
   }
 
   const lastAssistant = [...(messages ?? [])].reverse().find((m) => m.role !== "event")?.id;
@@ -175,8 +187,10 @@ export default function ChatView({
                     <p>{a.summary}?</p>
                     {a.status === "pending" ? (
                       <div className="row">
-                        <button className="yes" onClick={() => decide(a, true)}>{a.kind === "import_recipe_url" ? "Save it" : "Yes, update"}</button>
-                        <button className="no" onClick={() => decide(a, false)}>No thanks</button>
+                        <button className="yes" disabled={deciding === a.id || Boolean(streaming)} onClick={() => decide(a, true)}>
+                          {deciding === a.id ? (a.kind === "import_recipe_url" ? "Saving…" : "Updating…") : a.kind === "import_recipe_url" ? "Save it" : "Yes, update"}
+                        </button>
+                        <button className="no" disabled={deciding === a.id || Boolean(streaming)} onClick={() => decide(a, false)}>No thanks</button>
                       </div>
                     ) : (
                       <span className="done">

@@ -18,7 +18,7 @@ The goal is simple. We want to cook at home more, and planning was always the pa
 
 **Starts with your recipe box.** Mealie is the source of truth for recipes. Sal searches it first, because a recipe you've already made once is the one you'll make again. He also checks recent dinners so he doesn't repeat last week.
 
-**Finds new things on the web.** Ask for something new and Sal searches the web, reads the recipe page, and pitches one or two with a link. If you like one, he asks to save it into Mealie by URL.
+**Finds new things on the web.** Ask for something new and Sal searches the web, reads the recipe page, and pitches one or two with a link. He only pitches pages that actually contain a recipe, so roundup posts get skipped. If you like one, he asks to save it into Mealie with its photo. Recipe blogs without structured data, and sites that block bots, work too. See [reading recipes from the web](docs/architecture.md#reading-recipes-from-the-web).
 
 **Learns what everyone likes.** Each person has a taste profile: favorites, won't-eat, allergies, and things Sal noticed. Sal fills it in from conversation. Everyone can see everyone's profile. You edit your own, and grown-ups look after the kids'. Allergies and won't-eats are hard rules for the planner.
 

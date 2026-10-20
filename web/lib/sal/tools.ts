@@ -1,8 +1,9 @@
 import type OpenAI from "openai";
 import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROFILE_LISTS, type ProfileChange, type ProfileList, type User } from "../db";
 import { addDays, isDate, localDate, weekStart } from "../dates";
-import { getRecipe, importRecipeFromUrl, listMealPlans, searchRecipes } from "../mealie";
-import { assertPublicUrl, readPage, webSearch } from "../web";
+import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
+import { extractRecipe, NoRecipeError, type Recipe } from "../recipe";
+import { webSearch } from "../web";
 import { getWeek, updateNight } from "../week";
 import { weekBlock } from "./prompt";
 
@@ -88,7 +89,9 @@ export const TOOLS: Tool[] = [
     type: "function",
     function: {
       name: "read_link",
-      description: "Read a web page. Recipe pages come back as structured ingredients and steps.",
+      description:
+        "Read a web page. If it has a recipe, you get its ingredients and steps and importable=true. " +
+        "If not, importable=false with a short excerpt of the page. Only offer to save recipes with importable=true.",
       parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
     },
   },
@@ -97,7 +100,8 @@ export const TOOLS: Tool[] = [
     function: {
       name: "import_recipe_url",
       description:
-        "Ask to save a web recipe into the Mealie recipe box. The person gets an approve button; it runs only if they tap it. " +
+        "Ask to save a web recipe into the Mealie recipe box. The page is read first; if it has no usable recipe you get an error " +
+        "right away and no button is shown. Otherwise the person gets an approve button and it runs only if they tap it. " +
         "Optionally put it on a night of the week ticket once saved.",
       parameters: {
         type: "object",
@@ -231,21 +235,48 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
     }
     case "web_search":
       return webSearch(String(args.query));
-    case "read_link":
-      return readPage(String(args.url));
+    case "read_link": {
+      const url = String(args.url ?? "");
+      try {
+        const r = await extractRecipe(url);
+        const inBox = await findBySourceUrl(url).catch(() => undefined);
+        return {
+          url,
+          importable: true,
+          alreadyInBox: inBox ? { name: inBox.name, slug: inBox.slug } : null,
+          name: r.name,
+          description: r.description,
+          servings: r.recipeYield,
+          totalTime: r.totalTime,
+          ingredients: r.recipeIngredient,
+          steps: r.recipeInstructions,
+        };
+      } catch (e) {
+        if (e instanceof NoRecipeError) return { url, importable: false, reason: e.message, title: e.title, excerpt: e.excerpt };
+        return { url, importable: false, error: (e as Error).message };
+      }
+    }
     case "import_recipe_url": {
       const url = String(args.url ?? "");
-      // early, friendly failure; the import itself fetches through the public-only connection
-      let host: string;
+      let recipe: Recipe;
       try {
-        host = (await assertPublicUrl(url)).hostname;
+        // read it now, so a page without a recipe fails here instead of after someone taps approve
+        recipe = await extractRecipe(url);
       } catch (e) {
-        return { error: (e as Error).message };
+        return { error: `Can't save that one: ${(e as Error).message} Suggest a different recipe instead.` };
       }
+      const existing = await findBySourceUrl(url).catch(() => undefined);
       const planFor = isDate(args.plan_for) ? args.plan_for : null;
-      const title = String(args.title ?? url).slice(0, 100);
-      const id = createAction(ctx, "import_recipe_url", { url, title, planFor }, `Save "${title}" from ${host} to the recipe box`);
-      return { status: "waiting for approval", actionId: id };
+      if (existing) {
+        if (planFor) {
+          await updateNight({ date: planFor, recipeSlug: existing.slug }, ctx.user.id);
+          ctx.changed.add("week");
+        }
+        return { alreadyInBox: { name: existing.name, slug: existing.slug }, plannedFor: planFor };
+      }
+      const host = new URL(url).hostname.replace(/^www\./, "");
+      const id = createAction(ctx, "import_recipe_url", { url, recipe, planFor }, `Save "${recipe.name}" from ${host} to the recipe box`);
+      return { status: "waiting for approval", actionId: id, name: recipe.name };
     }
     case "update_profile": {
       const target = getUserByName(String(args.person ?? ""));
@@ -284,8 +315,9 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
     let message: string;
     const changed: ("week" | "profiles")[] = [];
     if (a.kind === "import_recipe_url") {
-      const r = await importRecipeFromUrl(args.url);
-      message = `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
+      // save exactly what was read when Sal asked; older requests only stored the URL
+      const { recipe: r, existed } = await importRecipe(args.recipe ?? (await extractRecipe(args.url)));
+      message = existed ? `"${r.name}" was already in the recipe box (slug ${r.slug}).` : `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
       if (args.planFor) {
         await updateNight({ date: args.planFor, recipeSlug: r.slug, title: r.name, sourceUrl: null }, user.id);
         message += ` Put it on ${args.planFor}.`;

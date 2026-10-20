@@ -39,6 +39,7 @@ export default function Composer({
   const fileInput = useRef<HTMLInputElement>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const cancelled = useRef(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     const el = input.current;
@@ -189,8 +190,15 @@ export default function Composer({
               enterKeyHint="send"
               autoComplete="off"
               onChange={(e) => setText(e.target.value)}
-              onFocus={() => onKeyboard(true)}
-              onBlur={() => onKeyboard(false)}
+              onFocus={() => {
+                clearTimeout(blurTimer.current);
+                onKeyboard(true);
+              }}
+              // bring the tab bar back only after the tap that caused the blur has landed,
+              // or the layout shifts under the finger and the tap misses
+              onBlur={() => {
+                blurTimer.current = setTimeout(() => onKeyboard(false), 350);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();

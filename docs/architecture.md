@@ -12,7 +12,8 @@
 | Mealie client | `web/lib/mealie.ts` | Thin wrapper over the Mealie REST API |
 | Calendar | `web/lib/calendar.ts` | Reads ICS feeds, expands repeating events, finds busy evenings |
 | Week | `web/lib/week.ts` | The week ticket: nights, overrides, sending to Mealie |
-| Web | `web/lib/web.ts` | Web search and the link reader (with private-address blocking) |
+| Web | `web/lib/web.ts` | Web search, the public-only page fetcher, photo downloads |
+| Recipes | `web/lib/recipe.ts` | Turns a web page into a recipe, for both the link reader and the Mealie import |
 | Vision | `web/lib/vision.ts` | Describes photos for the chat model |
 | Storage | `web/lib/db.ts` | SQLite schema and profile helpers |
 
@@ -26,13 +27,28 @@
 | `get_week(week_of)` | Any week's ticket: busy nights, overrides, planned dishes | No |
 | `plan_nights(nights[])` | Write dishes onto the ticket, or mark nights off | No (it's a draft) |
 | `web_search(query)` | Find new recipes online | No |
-| `read_link(url)` | Read a page. Recipe pages come back as structured ingredients and steps | No |
-| `import_recipe_url(url, plan_for?)` | Save a web recipe into Mealie, optionally onto a night | Yes |
+| `read_link(url)` | Read a page. Recipes come back as ingredients and steps with `importable: true` | No |
+| `import_recipe_url(url, plan_for?)` | Save a web recipe into Mealie, optionally onto a night. Refused up front if the page has no recipe | Yes |
 | `update_profile(person, changes[])` | Add or remove likes, won't-eats, allergies, notes | Yes |
 
 An approval-gated tool doesn't run. It records a pending action and tells the model it's waiting. The chat shows the action as a card with approve and decline buttons. Tapping one runs (or drops) the action and adds an event line to the conversation, so Sal knows what happened on his next turn.
 
 Sending the week to Mealie isn't a tool at all. Only the "Send to Mealie" button on the ticket does it.
+
+## Reading recipes from the web
+
+`extractRecipe(url)` in `web/lib/recipe.ts` is the one path from a web page to a recipe. Sal's link reader and the Mealie import both use it, so what Sal read is what gets saved. The extracted recipe is stored with the approval request, and approving saves exactly that.
+
+1. Fetch the page through the public-only connection. If the site blocks bots (Allrecipes, Serious Eats and Simply Recipes answer 402), fetch it through NanoGPT's page fetcher instead. That runs on their servers, and it's only used after the site has answered, never for addresses the app refused.
+2. Look for a schema.org `Recipe` in the page's JSON-LD, at any depth (`@graph`, `mainEntity`, and so on).
+3. If there isn't one, find the recipe in the page text. That's either a recipe-card plugin's container, or the "Ingredients" heading followed by the most measurements (cups, tbsp, lb…), since blog posts say "ingredients" in their FAQs too. The chat model copies the recipe out as JSON and is told not to invent anything. A page needs an ingredient list and steps to count.
+4. Results are cached for an hour.
+
+Roundup posts ("10 easy dinners") and articles come back as not importable. Sal is told to pitch only importable recipes, and the import tool refuses anything else before an approve button appears.
+
+To save a recipe, the app builds schema.org JSON with no media URLs and sends it to Mealie's `create/html-or-json`. It then sets the source link and uploads the photo, which it downloaded itself. Mealie never fetches a URL from the web, so a link can't point it at the home network. If a recipe from the same page is already in Mealie, the app links that one instead of saving a copy.
+
+When an approved action fails, the chat asks Sal to follow up straight away, so the person sees what went wrong and what to do next.
 
 ## Mealie endpoints used
 
@@ -40,7 +56,10 @@ Sending the week to Mealie isn't a tool at all. Only the "Send to Mealie" button
 |---|---|
 | Search recipes | `GET /api/recipes?search=...&perPage=...` |
 | Get a recipe | `GET /api/recipes/{slug}` |
-| Import by URL | `POST /api/recipes/create/url` (returns the new slug) |
+| Find by source page | `GET /api/recipes?queryFilter=orgURL = "..."` |
+| Save a recipe | `POST /api/recipes/create/html-or-json` with schema.org JSON (returns the new slug) |
+| Set source link | `PATCH /api/recipes/{slug}` with `orgURL` |
+| Upload photo | `PUT /api/recipes/{slug}/image` (multipart `image`, `extension`) |
 | List meal plans | `GET /api/households/mealplans?start_date=...&end_date=...` |
 | Create a dinner | `POST /api/households/mealplans` with `date`, `entryType: "dinner"`, and `recipeId` or `title` |
 | Delete a dinner | `DELETE /api/households/mealplans/{id}` |

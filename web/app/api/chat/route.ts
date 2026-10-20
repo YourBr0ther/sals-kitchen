@@ -15,10 +15,11 @@ const busy = new Set<number>();
 export async function POST(req: Request) {
   const user = await currentUser();
   if (!user) return unauthorized();
-  const body = (await req.json()) as { text?: string; attachments?: string[]; voice?: boolean };
+  const body = (await req.json()) as { text?: string; attachments?: string[]; voice?: boolean; followUp?: boolean };
   const text = (body.text ?? "").trim().slice(0, 4000);
   const attachments = (body.attachments ?? []).filter((id) => typeof id === "string").slice(0, 4);
-  if (!text && !attachments.length) return Response.json({ error: "Say something first." }, { status: 400 });
+  // a follow-up lets Sal react to something that just happened (like a failed save) without a new message
+  if (!body.followUp && !text && !attachments.length) return Response.json({ error: "Say something first." }, { status: 400 });
   if (attachments.length) {
     const owned = getDb()
       .prepare(`select count(*) as n from uploads where user_id = ? and id in (${attachments.map(() => "?").join(",")})`)
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
   if (busy.has(user.id)) return Response.json({ error: "Sal's still answering your last message." }, { status: 409 });
 
   busy.add(user.id);
-  const userMessageId = addMessage(user.id, "user", text, { attachments, voice: Boolean(body.voice) });
+  const userMessageId = body.followUp ? null : addMessage(user.id, "user", text, { attachments, voice: Boolean(body.voice) });
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
