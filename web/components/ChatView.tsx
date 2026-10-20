@@ -367,7 +367,7 @@ export default function ChatView({
             <p>Sal&apos;s in the kitchen. Ask him to plan this week, find something new, or tell him what you can&apos;t stand.</p>
             <div className="chips">
               {["Plan this week's dinners", "What's in our recipe box?", "Find me something new"].map((c) => (
-                <button key={c} className="chip" style={{ color: "var(--forest)", borderColor: "var(--line)" }} onClick={() => void send(c)}>{c}</button>
+                <button key={c} className="chip" style={{ color: "var(--accent)", borderColor: "var(--line)" }} onClick={() => void send(c)}>{c}</button>
               ))}
             </div>
           </div>
