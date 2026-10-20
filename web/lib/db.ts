@@ -109,6 +109,55 @@ create table if not exists uploads (
   mime text not null,
   created_at text not null default (datetime('now'))
 );
+-- what's already in the kitchen, shared by the household; left off grocery lists
+create table if not exists pantry (
+  id integer primary key,
+  item text not null unique collate nocase,
+  added_by integer references users(id) on delete set null,
+  created_at text not null default (datetime('now'))
+);
+-- how a planned dinner went, one answer per person per night
+create table if not exists feedback (
+  date text not null,
+  user_id integer not null references users(id) on delete cascade,
+  verdict text not null,
+  comment text,
+  created_at text not null default (datetime('now')),
+  primary key (date, user_id)
+);
+-- what each person did that the rest of the household should know about
+create table if not exists activity (
+  id integer primary key,
+  user_id integer references users(id) on delete set null,
+  text text not null,
+  created_at text not null default (datetime('now'))
+);
+-- the Mealie shopping list made for a week, and which of its items this app wrote
+create table if not exists grocery_lists (
+  week_start text primary key,
+  list_id text not null,
+  item_ids text not null default '[]',
+  item_count integer not null default 0,
+  created_by integer references users(id) on delete set null,
+  updated_at text not null default (datetime('now'))
+);
+create table if not exists push_subscriptions (
+  endpoint text primary key,
+  user_id integer not null references users(id) on delete cascade,
+  keys text not null,
+  created_at text not null default (datetime('now'))
+);
+create table if not exists user_settings (
+  user_id integer primary key references users(id) on delete cascade,
+  settings text not null default '{}'
+);
+-- one row per reminder sent, so a restart can't send it twice
+create table if not exists notifications_sent (
+  user_id integer not null references users(id) on delete cascade,
+  kind text not null,
+  day text not null,
+  primary key (user_id, kind, day)
+);
 `;
 
 /** Columns and constraints added after the first deploy. Each step is safe to run again. */
@@ -139,6 +188,8 @@ function migrate(d: Database.Database) {
       d.exec("alter table pending_actions_new rename to pending_actions");
     })();
   }
+  // Mealie's "last made" is set once per night, on the first answer that says it was cooked
+  if (!cols("nights").includes("marked_made")) d.exec("alter table nights add column marked_made integer not null default 0");
   // a crash mid-action leaves it 'running'; it may have half-happened, so don't offer it again blindly
   d.exec("update pending_actions set status = 'failed', result = 'Interrupted by a restart. Ask Sal to try again.' where status = 'running'");
 }
