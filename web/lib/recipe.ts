@@ -1,6 +1,11 @@
 import OpenAI from "openai";
 import { config } from "./config";
+import { decodeEntities, htmlToText } from "./html";
+import { type Heading, ingredientHeadings, type Note, recipeNotes } from "./recipe-card";
 import { fetchText, fetchViaService, HttpStatusError } from "./web";
+
+export { decodeEntities };
+export type { Heading, Note };
 
 /**
  * One recipe extractor shared by Sal's link reader and the Mealie import, so what
@@ -26,6 +31,17 @@ export interface Recipe {
   sourceUrl: string;
   /** how it was found: structured data on the page, or read from the page text */
   via: "schema" | "page";
+  // Optional: recipes saved in pending approvals before these existed don't have them.
+  /** section headings ("For the sauce") placed before recipeIngredient[at] */
+  ingredientHeadings?: Heading[];
+  /** section headings placed before recipeInstructions[at] */
+  instructionHeadings?: Heading[];
+  servings?: number | null;
+  /** what the recipe makes when that isn't servings: "1 loaf", "28 cookies" */
+  makes?: { quantity: number; text: string } | null;
+  /** schema.org NutritionInformation keys Mealie stores, per serving */
+  nutrition?: Record<string, string>;
+  notes?: Note[];
 }
 
 export class NoRecipeError extends Error {
@@ -61,18 +77,6 @@ function findRecipeNode(node: unknown, depth = 0): Json | undefined {
   }
 }
 
-export function decodeEntities(s: string): string {
-  return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-    .replace(/&nbsp;/g, " ")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
-
 const clean = (s: string) => decodeEntities(s.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 
 /** Strings out of the many shapes schema.org allows: text, lists, HowToStep, HowToSection. */
@@ -98,23 +102,112 @@ function firstImage(v: unknown): string | null {
 
 const isoOrNull = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
 
-function fromSchema(node: Json, sourceUrl: string, pageImage: string | null): Recipe {
+/**
+ * Lines plus section headings, from schema.org HowToSection groups or the model's
+ * {"section", "items"} groups. Plain lists come back with no headings.
+ */
+function sectioned(v: unknown, max: number): { lines: string[]; headings: Heading[] } {
+  const lines: string[] = [];
+  const headings: Heading[] = [];
+  const walk = (x: unknown) => {
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (x && typeof x === "object") {
+      const o = x as Json;
+      const isSection = o["@type"] === "HowToSection" || o.type === "HowToSection" || "items" in o;
+      if (isSection) {
+        const title = clean(String(o.name ?? o.section ?? "")).replace(/[\s:]+$/, "");
+        const before = lines.length;
+        walk(o.itemListElement ?? o.items);
+        if (title && lines.length > before) headings.push({ at: before, title });
+        return;
+      }
+    }
+    lines.push(...texts(x));
+  };
+  walk(v);
+  // nested sections finish inner-first; keep headings in line order
+  return { lines: lines.slice(0, max), headings: headings.filter((h) => h.at < max).sort((a, b) => a.at - b.at) };
+}
+
+// WP Recipe Maker's schema output wraps ingredient notes as "(, minced)"
+const tidyIngredient = (s: string) => s.replace(/\(\s*,\s*/g, "(");
+
+const SERVING_WORDS = /\b(servings?|serving\(s\)|serves|people|persons?|portions?)\b/i;
+
+/**
+ * Pages give yield as "4", "4 servings", ["4", "4 - 5 people"], or "1 loaf, 10 serving(s)".
+ * Mealie keeps servings and "what it makes" (1 loaf) as separate fields, so split them.
+ */
+function readYield(raw: string[]): Pick<Recipe, "recipeYield" | "servings" | "makes"> {
+  const parts = raw.flatMap((s) => s.split(/,\s*/)).map((s) => s.trim()).filter(Boolean);
+  let servings: number | null = null;
+  let makes: Recipe["makes"] = null;
+  for (const p of parts) {
+    const n = Number(p.match(/\d+(\.\d+)?/)?.[0]);
+    if (!n) continue;
+    if (/^\d+(\.\d+)?$/.test(p) || SERVING_WORDS.test(p)) servings ??= n;
+    // "8 about 4 meatballs each" describes a serving, not what the recipe makes
+    else if (!makes && !/\b(each|per)\b/i.test(p)) {
+      const m = p.match(/^(?:makes\s+)?(?:about\s+)?(\d+(?:\.\d+)?)\s+(.+)$/i);
+      makes = m ? { quantity: Number(m[1]), text: m[2] } : { quantity: 0, text: p };
+    }
+  }
+  // the most descriptive version for people to read ("4 - 5 people" over "4")
+  const display = raw.find((s) => /[a-z]/i.test(s)) ?? raw[0] ?? null;
+  return { recipeYield: display, servings, makes };
+}
+
+// the NutritionInformation fields Mealie has a place for
+const NUTRITION_KEYS = [
+  "calories",
+  "carbohydrateContent",
+  "cholesterolContent",
+  "fatContent",
+  "fiberContent",
+  "proteinContent",
+  "saturatedFatContent",
+  "sodiumContent",
+  "sugarContent",
+  "transFatContent",
+  "unsaturatedFatContent",
+];
+
+function readNutrition(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return;
+  const out: Record<string, string> = {};
+  for (const k of NUTRITION_KEYS) {
+    const val = (v as Json)[k];
+    if ((typeof val === "string" || typeof val === "number") && /\d/.test(String(val))) out[k] = clean(String(val));
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function fromSchema(node: Json, sourceUrl: string, pageImage: string | null, html: string): Recipe {
   const img = firstImage(node.image) ?? pageImage;
+  const ingredients = texts(node.recipeIngredient).map(tidyIngredient).slice(0, 80);
+  const steps = sectioned(node.recipeInstructions, 60);
+  const notes = recipeNotes(html);
   return {
     name: clean(String(node.name ?? "")),
-    description: clean(String(node.description ?? "")).slice(0, 600),
-    recipeYield: texts(node.recipeYield)[0] ?? null,
+    description: clean(String(node.description ?? "")).slice(0, 1500),
+    ...readYield(texts(node.recipeYield)),
     prepTime: isoOrNull(node.prepTime),
     cookTime: isoOrNull(node.cookTime),
     totalTime: isoOrNull(node.totalTime),
-    recipeIngredient: texts(node.recipeIngredient).slice(0, 80),
-    recipeInstructions: texts(node.recipeInstructions).slice(0, 60),
+    recipeIngredient: ingredients,
+    recipeInstructions: steps.lines,
     recipeCategory: texts(node.recipeCategory).slice(0, 5),
     recipeCuisine: texts(node.recipeCuisine).slice(0, 5),
-    keywords: (typeof node.keywords === "string" ? node.keywords.split(",") : texts(node.keywords)).map((k) => k.trim()).filter(Boolean).slice(0, 10),
+    // King Arthur separates keywords with ";;"
+    keywords: (typeof node.keywords === "string" ? node.keywords.split(/[,;]/) : texts(node.keywords)).map((k) => k.trim()).filter(Boolean).slice(0, 10),
     imageUrl: img ? absolute(img, sourceUrl) : null,
     sourceUrl,
     via: "schema",
+    // schema.org has no ingredient groups; recipe-card plugins show them in the page itself
+    ingredientHeadings: ingredientHeadings(html, ingredients.length),
+    instructionHeadings: steps.headings.length ? steps.headings : undefined,
+    nutrition: readNutrition(node.nutrition),
+    notes: notes.length ? notes : undefined,
   };
 }
 
@@ -136,18 +229,7 @@ function meta(html: string, prop: string): string | null {
 // Matched as class names inside <body>, since the same words show up in stylesheet links.
 const CARD = /class=["'][^"']*\b(wprm-recipe-container|wprm-recipe|tasty-recipes|mv-create-card|recipe-card|easyrecipe|cooked-recipe|zlrecipe)\b|itemtype=["']https?:\/\/schema\.org\/Recipe["']/i;
 
-function pageText(html: string): string {
-  return decodeEntities(
-    html
-      .replace(/<(script|style|noscript|svg|nav|iframe|form)[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<(br|\/p|\/li|\/h\d|\/div|\/tr)[^>]*>/gi, "\n")
-      .replace(/<li[^>]*>/gi, "\n- ")
-      .replace(/<[^>]+>/g, " "),
-  )
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n\s*\n+/g, "\n")
-    .trim();
-}
+const pageText = htmlToText;
 
 const MEASURE = /\b(\d+\s*\/\s*\d+|\d+(\.\d+)?|½|¼|¾|⅓|⅔)\s*(cups?|c\.|tbsps?|tablespoons?|tsps?|teaspoons?|lbs?|pounds?|oz|ounces?|g|grams?|kg|ml|l|cloves?|cans?|pinch|dash|sticks?|slices?|large|medium|small|whole|packages?|pkgs?\.?)\b/gi;
 
@@ -188,9 +270,17 @@ const EXTRACT_PROMPT = `You pull recipes out of web page text for a recipe manag
 Copy the recipe exactly as the page gives it. Never invent, complete, or improve anything.
 Answer with one JSON object and nothing else:
 {"found": true, "name": "...", "description": "one or two sentences from the page", "recipeYield": "4 servings" or null,
- "prepTime": "PT15M" or null, "cookTime": "PT25M" or null, "totalTime": "PT40M" or null,
- "recipeIngredient": ["1 lb chicken thighs", ...], "recipeInstructions": ["Heat the oil...", ...]}
+ "servings": 4 or null, "prepTime": "PT15M" or null, "cookTime": "PT25M" or null, "totalTime": "PT40M" or null,
+ "recipeIngredient": ["1 lb chicken thighs", ...], "recipeInstructions": ["Heat the oil...", ...],
+ "nutrition": {"calories": "567", "fatContent": "31 g", "carbohydrateContent": "36 g", "proteinContent": "36 g"} or null,
+ "notes": ["..."] or null}
 Times are ISO 8601 durations. Each ingredient is one line with its amount. Each instruction is one step.
+recipeYield is what the page says it makes ("1 9x13-inch lasagna", "28 cookies"); servings is the number of servings only if the page states it.
+If the page splits ingredients or steps into titled groups ("For the sauce:"), give that list as
+[{"section": "For the sauce", "items": ["...", ...]}, ...] instead, with the groups in page order.
+nutrition: only if the page lists nutrition facts, per serving, using the schema.org NutritionInformation names
+(calories, fatContent, saturatedFatContent, carbohydrateContent, sugarContent, fiberContent, proteinContent, cholesterolContent, sodiumContent).
+notes: only text the page labels as the recipe's notes or tips, one entry per note; otherwise null.
 If the text has no complete recipe (both an ingredient list and steps), answer {"found": false}.`;
 
 async function fromPageText(excerpt: string, title: string, sourceUrl: string, pageImage: string | null): Promise<Recipe> {
@@ -208,28 +298,36 @@ async function fromPageText(excerpt: string, title: string, sourceUrl: string, p
   try {
     data = JSON.parse(json);
   } catch {
-    throw new NoRecipeError("Couldn't read a recipe off that page.", title, excerpt.slice(0, 1500));
+    // a garbled reply says nothing about the page; don't cache it as "no recipe"
+    throw new Error("Couldn't read the recipe off that page this time. Try again.");
   }
-  const ingredients = texts(data.recipeIngredient);
-  const steps = texts(data.recipeInstructions);
-  if (data.found === false || ingredients.length < 2 || steps.length < 1) {
+  const ingredients = sectioned(data.recipeIngredient, 80);
+  const steps = sectioned(data.recipeInstructions, 60);
+  if (data.found === false || ingredients.lines.length < 2 || steps.lines.length < 1) {
     throw new NoRecipeError("That page doesn't have a complete recipe (ingredients and steps).", title, excerpt.slice(0, 1500));
   }
+  const servings = typeof data.servings === "number" && data.servings > 0 ? `${data.servings} servings` : null;
+  const yieldText = typeof data.recipeYield === "string" ? data.recipeYield : null;
+  const notes = texts(data.notes).filter((n) => n.length > 3);
   return {
     name: clean(String(data.name ?? title)) || title,
-    description: clean(String(data.description ?? "")).slice(0, 600),
-    recipeYield: typeof data.recipeYield === "string" ? data.recipeYield : null,
+    description: clean(String(data.description ?? "")).slice(0, 1500),
+    ...readYield([yieldText, servings].filter((s): s is string => !!s)),
     prepTime: isoOrNull(data.prepTime),
     cookTime: isoOrNull(data.cookTime),
     totalTime: isoOrNull(data.totalTime),
-    recipeIngredient: ingredients.slice(0, 80),
-    recipeInstructions: steps.slice(0, 60),
+    recipeIngredient: ingredients.lines,
+    recipeInstructions: steps.lines,
     recipeCategory: [],
     recipeCuisine: [],
     keywords: [],
     imageUrl: pageImage,
     sourceUrl,
     via: "page",
+    ingredientHeadings: ingredients.headings.length ? ingredients.headings : undefined,
+    instructionHeadings: steps.headings.length ? steps.headings : undefined,
+    nutrition: readNutrition(data.nutrition),
+    notes: notes.length ? [{ title: "Notes", text: notes.join("\n\n").slice(0, 5000) }] : undefined,
   };
 }
 
@@ -268,7 +366,7 @@ export async function extractRecipe(url: string): Promise<Recipe> {
     try {
       const node = findRecipeNode(JSON.parse(m[1].trim()));
       if (node) {
-        const r = fromSchema(node, url, pageImage);
+        const r = fromSchema(node, url, pageImage, html);
         // some sites publish a Recipe node with no ingredients; fall through to the page text
         if (r.recipeIngredient.length >= 2 && r.recipeInstructions.length >= 1) result = r;
         break;
@@ -280,6 +378,11 @@ export async function extractRecipe(url: string): Promise<Recipe> {
   if (!result) {
     try {
       result = await fromPageText(recipeExcerpt(html), title, url, pageImage);
+      // a recipe card's notes are easier to read off the HTML than out of the excerpt
+      if (!result.notes) {
+        const notes = recipeNotes(html);
+        if (notes.length) result.notes = notes;
+      }
     } catch (e) {
       if (!(e instanceof NoRecipeError)) throw e;
       result = e;
@@ -298,14 +401,33 @@ export function toSchemaJson(r: Recipe): Json {
     name: r.name,
     description: r.description,
     recipeIngredient: r.recipeIngredient,
-    recipeInstructions: r.recipeInstructions.map((text) => ({ "@type": "HowToStep", text })),
+    // Mealie keeps a HowToSection's name as a heading on its first step
+    recipeInstructions: withSections(
+      r.recipeInstructions.map((text) => ({ "@type": "HowToStep", text })),
+      r.instructionHeadings,
+    ),
   };
-  if (r.recipeYield) out.recipeYield = r.recipeYield;
+  // Mealie reads one yield value; servings and "makes" are both set exactly after import
+  const yieldText = r.servings ? `${r.servings} servings` : r.makes ? `${r.makes.quantity || ""} ${r.makes.text}`.trim() : r.recipeYield;
+  if (yieldText) out.recipeYield = yieldText;
   if (r.prepTime) out.prepTime = r.prepTime;
   if (r.cookTime) out.cookTime = r.cookTime;
   if (r.totalTime) out.totalTime = r.totalTime;
   if (r.recipeCategory.length) out.recipeCategory = r.recipeCategory;
-  if (r.recipeCuisine.length) out.recipeCuisine = r.recipeCuisine;
-  if (r.keywords.length) out.keywords = r.keywords.join(", ");
+  // Mealie has no cuisine field, so cuisines ride along as tags
+  const tags = [...new Map([...r.keywords, ...r.recipeCuisine].map((k) => [k.toLowerCase(), k])).values()];
+  if (tags.length) out.keywords = tags.join(", ");
+  if (r.nutrition) out.nutrition = { "@type": "NutritionInformation", ...r.nutrition };
+  if (r.notes?.length) out.notes = r.notes;
+  return out;
+}
+
+function withSections(steps: Json[], headings: Heading[] | undefined): Json[] {
+  if (!headings?.length) return steps;
+  const out: Json[] = steps.slice(0, headings[0].at);
+  headings.forEach((h, i) => {
+    const items = steps.slice(h.at, headings[i + 1]?.at ?? steps.length);
+    if (items.length) out.push({ "@type": "HowToSection", name: h.title, itemListElement: items });
+  });
   return out;
 }

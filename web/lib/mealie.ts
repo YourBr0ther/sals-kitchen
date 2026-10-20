@@ -27,7 +27,11 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new MealieError(`Mealie ${init.method ?? "GET"} ${path} failed (${res.status}): ${body.slice(0, 300)}`);
+    console.warn(`[mealie] ${init.method ?? "GET"} ${path} -> ${res.status}: ${body.slice(0, 500)}`);
+    if (res.status === 404) throw new MealieError("Mealie couldn't find that recipe or plan.");
+    if (res.status === 400 || res.status === 422) throw new MealieError("Mealie didn't accept that. The recipe data may be incomplete.");
+    if (res.status >= 500) throw new MealieError("Mealie hit an error on its end. Try again in a minute.");
+    throw new MealieError(`Mealie said no (${res.status}).`);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -54,18 +58,52 @@ type RawRecipe = {
   totalTime?: string | null;
   prepTime?: string | null;
   performTime?: string | null;
+  // Mealie 3.x stores parsed durations as seconds and leaves the text fields empty
+  totalTimeSeconds?: number | null;
+  prepTimeSeconds?: number | null;
+  performTimeSeconds?: number | null;
   tags?: { name: string }[];
   recipeCategory?: { name: string }[];
   rating?: number | null;
   lastMade?: string | null;
   recipeYield?: string | null;
+  recipeServings?: number | null;
+  recipeYieldQuantity?: number | null;
   orgURL?: string | null;
-  recipeIngredient?: { display?: string; note?: string; originalText?: string }[];
-  recipeInstructions?: { text: string }[];
+  recipeIngredient?: { display?: string; note?: string; originalText?: string; title?: string | null }[];
+  recipeInstructions?: { text: string; title?: string | null }[];
   notes?: { title: string; text: string }[];
+  nutrition?: Record<string, string | null>;
+  settings?: Record<string, unknown>;
 };
 
-const recipeUrl = (slug: string) => `${config.mealie.publicUrl}/g/home/r/${slug}`;
+/** "1 hr 10 min" from seconds. */
+function readableSeconds(s: number | null | undefined): string | null {
+  if (!s || s <= 0) return null;
+  const h = Math.floor(s / 3600);
+  const m = Math.round((s % 3600) / 60);
+  return [h && `${h} hr`, m && `${m} min`].filter(Boolean).join(" ") || null;
+}
+
+const totalTimeOf = (r: RawRecipe) =>
+  r.totalTime ||
+  readableSeconds(r.totalTimeSeconds) ||
+  r.performTime ||
+  readableSeconds(r.performTimeSeconds) ||
+  r.prepTime ||
+  readableSeconds(r.prepTimeSeconds) ||
+  null;
+
+// recipe pages live under the group's slug; learned on first use, "home" until then
+let groupSlug = "home";
+let groupSlugLoaded = false;
+async function loadGroupSlug() {
+  if (groupSlugLoaded) return;
+  groupSlugLoaded = true;
+  const me = await call<{ groupSlug?: string }>("/api/users/self").catch(() => null);
+  if (me?.groupSlug) groupSlug = me.groupSlug;
+}
+const recipeUrl = (slug: string) => `${config.mealie.publicUrl}/g/${groupSlug}/r/${encodeURIComponent(slug)}`;
 
 function summarize(r: RawRecipe): RecipeSummary {
   return {
@@ -73,7 +111,7 @@ function summarize(r: RawRecipe): RecipeSummary {
     slug: r.slug,
     name: r.name,
     description: (r.description ?? "").slice(0, 240),
-    totalTime: r.totalTime || r.performTime || r.prepTime || null,
+    totalTime: totalTimeOf(r),
     tags: (r.tags ?? []).map((t) => t.name),
     categories: (r.recipeCategory ?? []).map((c) => c.name),
     rating: r.rating ?? null,
@@ -83,6 +121,7 @@ function summarize(r: RawRecipe): RecipeSummary {
 }
 
 export async function searchRecipes(query: string, perPage = 12): Promise<{ total: number; recipes: RecipeSummary[] }> {
+  await loadGroupSlug();
   const params = new URLSearchParams({ perPage: String(perPage), page: "1", orderBy: "name", orderDirection: "asc" });
   if (query.trim()) params.set("search", query.trim());
   const data = await call<{ total: number; items: RawRecipe[] }>(`/api/recipes?${params}`);
@@ -90,15 +129,45 @@ export async function searchRecipes(query: string, perPage = 12): Promise<{ tota
 }
 
 export async function getRecipe(slug: string) {
+  await loadGroupSlug();
   const r = await call<RawRecipe>(`/api/recipes/${encodeURIComponent(slug)}`);
+  const makes = [r.recipeYieldQuantity || "", r.recipeYield ?? ""].join(" ").trim();
   return {
     ...summarize(r),
-    servings: r.recipeYield ?? null,
+    servings: [r.recipeServings ? `${r.recipeServings} servings` : "", makes].filter(Boolean).join(", ") || null,
     source: r.orgURL ?? null,
-    ingredients: (r.recipeIngredient ?? []).map((i) => i.display || i.originalText || i.note || "").filter(Boolean),
-    steps: (r.recipeInstructions ?? []).map((s) => s.text),
+    // section headings go in as their own lines, so "For the sauce:" reads in place
+    ingredients: (r.recipeIngredient ?? []).flatMap((i) => {
+      const line = i.display || i.originalText || i.note || "";
+      return [i.title ? `${i.title}:` : "", line].filter(Boolean);
+    }),
+    steps: (r.recipeInstructions ?? []).map((s) => (s.title ? `[${s.title}] ${s.text}` : s.text)),
     notes: (r.notes ?? []).map((n) => `${n.title}: ${n.text}`),
   };
+}
+
+/**
+ * What Mealie's import loses, set exactly once the recipe exists: the source link,
+ * ingredient section headings, servings next to "makes 1 loaf", and showing nutrition.
+ */
+function afterImport(recipe: Recipe, saved: RawRecipe): Record<string, unknown> {
+  const patch: Record<string, unknown> = { orgURL: recipe.sourceUrl };
+  const ingredients = saved.recipeIngredient ?? [];
+  // only when Mealie kept every line, so a heading can't land on the wrong one
+  if (recipe.ingredientHeadings?.length && ingredients.length === recipe.recipeIngredient.length) {
+    const titles = new Map(recipe.ingredientHeadings.map((h) => [h.at, h.title]));
+    patch.recipeIngredient = ingredients.map((ing, i) => (titles.has(i) ? { ...ing, title: titles.get(i) } : ing));
+  }
+  if (recipe.servings) patch.recipeServings = recipe.servings;
+  if (recipe.makes) {
+    patch.recipeYieldQuantity = recipe.makes.quantity;
+    patch.recipeYield = recipe.makes.text;
+    // Mealie's import reads "1 9x13-inch lasagna" as 1 serving; don't keep that guess
+    if (!recipe.servings) patch.recipeServings = 0;
+  }
+  // Mealie hides nutrition until a recipe's setting turns it on
+  if (recipe.nutrition && saved.settings) patch.settings = { ...saved.settings, showNutrition: true };
+  return patch;
 }
 
 /** A recipe already saved from this page, if any. */
@@ -131,7 +200,8 @@ export async function importRecipe(recipe: Recipe): Promise<{ recipe: RecipeSumm
     method: "POST",
     body: JSON.stringify({ data: JSON.stringify(toSchemaJson(recipe)), includeTags: true, includeCategories: true }),
   });
-  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify({ orgURL: recipe.sourceUrl }) });
+  const saved = await call<RawRecipe>(`/api/recipes/${encodeURIComponent(slug)}`);
+  await call(`/api/recipes/${encodeURIComponent(slug)}`, { method: "PATCH", body: JSON.stringify(afterImport(recipe, saved)) });
   if (recipe.imageUrl) {
     const img = await fetchImage(recipe.imageUrl).catch(() => null);
     if (img) {
