@@ -1,7 +1,7 @@
 import { guarded, readJson } from "@/lib/http";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { config } from "@/lib/config";
-import { pushConfigured, removeSubscription, saveSubscription } from "@/lib/push";
+import { pushConfigured, removeSubscription, saveSubscription, isPushEndpoint } from "@/lib/push";
 
 /** Whether the server can send reminders, and the key a phone needs to sign up. */
 export const GET = guarded("push GET", async function GET() {
@@ -13,14 +13,7 @@ export const GET = guarded("push GET", async function GET() {
 
 type SubBody = { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
 
-const validEndpoint = (s: unknown): s is string => {
-  if (typeof s !== "string" || s.length > 1000) return false;
-  try {
-    return new URL(s).protocol === "https:";
-  } catch {
-    return false;
-  }
-};
+const validEndpoint = (s: unknown): s is string => typeof s === "string" && s.length <= 1000 && isPushEndpoint(s);
 // base64url, as browsers send them
 const validKey = (s: unknown, max: number): s is string => typeof s === "string" && s.length > 0 && s.length <= max && /^[\w-]+=*$/.test(s);
 

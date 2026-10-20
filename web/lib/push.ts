@@ -45,6 +45,22 @@ export interface SendResult {
 const TTL_SECONDS = 4 * 3600;
 
 /** Send to every phone this person has turned reminders on for. Never throws. */
+// Browsers' push services. Only these may be saved as endpoints, so a sign-up can't point
+// the server at an arbitrary address (an internal one, say) and have it send requests there.
+const PUSH_HOSTS = ["fcm.googleapis.com", "android.googleapis.com", "web.push.apple.com", "updates.push.services.mozilla.com"];
+const PUSH_SUFFIXES = [".push.apple.com", ".push.services.mozilla.com", ".notify.windows.com"];
+
+export function isPushEndpoint(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" || u.port || u.username || u.password) return false;
+    const host = u.hostname.toLowerCase();
+    return PUSH_HOSTS.includes(host) || PUSH_SUFFIXES.some((s) => host.endsWith(s));
+  } catch {
+    return false;
+  }
+}
+
 export async function sendToUser(userId: number, msg: PushMessage): Promise<SendResult> {
   const result: SendResult = { sent: 0, removed: 0, failed: 0, statuses: [] };
   if (!pushConfigured()) return result;
@@ -60,6 +76,12 @@ export async function sendToUser(userId: number, msg: PushMessage): Promise<Send
   };
   await Promise.all(
     rows.map(async (r) => {
+      // rows saved before the allowlist existed get the same check
+      if (!isPushEndpoint(r.endpoint)) {
+        getDb().prepare("delete from push_subscriptions where endpoint = ?").run(r.endpoint);
+        result.removed++;
+        return;
+      }
       try {
         const res = await webpush.sendNotification({ endpoint: r.endpoint, keys: JSON.parse(r.keys) }, payload, options);
         result.sent++;

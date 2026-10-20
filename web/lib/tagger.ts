@@ -5,9 +5,12 @@ import type { Recipe } from "./recipe";
 const PROMPT = `You file recipes in a family's recipe box so they're easy to find later.
 Pick tags and categories for the recipe. Answer with one JSON object and nothing else:
 {"tags": ["Italian", "Chicken", "Weeknight"], "categories": ["Dinner"]}
-Tags (2 to 5): cuisine, main ingredient or protein, and at most one practical tag such as Weeknight, Make ahead, One pot, Slow cooker, Grill, Vegetarian, Kid friendly. Only use a practical tag when the recipe clearly is one.
-Categories (1 or 2): the kind of dish, such as Dinner, Side, Soup, Salad, Breakfast, Dessert, Baking, Snack, Drink, Sauce.
-Reuse the box's existing tags and categories whenever one fits, spelled exactly the same. Only make a new one when nothing existing fits.
+Tags (2 to 5), in this order:
+1. The main protein or ingredient, always: Chicken, Beef, Pork, Fish, Shrimp, Beans, Tofu, Pasta, Eggs...
+2. The cuisine, when it has a clear one: Italian, Mexican, Cajun, Thai...
+3. At most two practical tags, only when the recipe plainly is one: Weeknight (under 45 minutes total), One pot (cooked in a single pot or pan, start to finish), Sheet pan, Slow cooker, Grill, Make ahead, Vegetarian, Spicy.
+Categories (usually 1): the kind of dish, such as Dinner, Side, Soup, Salad, Breakfast, Dessert, Baking, Snack, Drink, Sauce. Add a second only if it's genuinely both.
+Reuse the box's existing tags and categories whenever one means the same thing, spelled exactly the same. Never use an existing tag just because it exists.
 Use short title-case names. No marketing phrases ("best", "easy recipe"), no dish names as tags.`;
 
 /**

@@ -8,9 +8,11 @@ export const POST = guarded("push test POST", async function POST() {
   if (!user) return unauthorized();
   if (!pushConfigured()) return Response.json({ error: "Reminders aren't set up on the server yet." }, { status: 503 });
   const result = await sendToUser(user.id, { title: "Sal's Kitchen", body: "Sal here. Reminders are on.", url: "/", tag: "test" });
+  // the push services' status codes stay in the server log; the phone only needs to know if it worked
   if (!result.sent) {
+    if (result.failed) console.warn(`[push] test for user ${user.id} failed: ${result.statuses.join(", ")}`);
     const error = result.failed ? "The push service didn't take it. Try again in a minute." : "No phone has reminders turned on for you yet.";
-    return Response.json({ error, ...result }, { status: result.failed ? 502 : 404 });
+    return Response.json({ error }, { status: result.failed ? 502 : 404 });
   }
-  return Response.json({ ok: true, ...result });
+  return Response.json({ ok: true, sent: result.sent });
 });

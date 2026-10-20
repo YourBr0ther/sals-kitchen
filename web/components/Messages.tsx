@@ -45,6 +45,8 @@ const APPROVE_LABEL: Record<string, string> = {
   remember: "Remember it",
   forget: "Forget it",
   make_grocery_list: "Make the list",
+  update_pantry: "Yes, update",
+  log_dinner: "Save it",
 };
 
 function ActionResult({ a }: { a: ActionView }) {

@@ -4,7 +4,7 @@ import { addDays, isDate, localDate, weekday, weekStart } from "../dates";
 import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
 import { logActivity } from "../activity";
 import { describeLlmError } from "../llm";
-import { recordFeedback, type Verdict } from "../feedback";
+import { recordFeedback, VERDICT_WORDS, type Verdict } from "../feedback";
 import { buildGroceryList } from "../groceries";
 import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS, windowRows } from "../memory";
 import { changePantry } from "../pantry";
@@ -497,8 +497,18 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { status: "waiting for approval", actionId: id };
     }
     case "update_pantry": {
-      const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 30) : []);
-      const r = changePantry(ctx.user.id, strings(args.add), strings(args.remove));
+      const strings = (v: unknown) =>
+        Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").map((x) => x.trim().slice(0, 60)).filter(Boolean).slice(0, 30) : [];
+      const add = strings(args.add);
+      const remove = strings(args.remove);
+      if (!add.length && !remove.length) return { error: "Nothing to change." };
+      // web text in view could be steering this; let the person confirm it
+      if (ctx.webInView) {
+        const parts = [add.length && `add ${add.join(", ")}`, remove.length && `take off ${remove.join(", ")}`].filter(Boolean).join("; ");
+        const id = createAction(ctx, "update_pantry", { add, remove }, `Kitchen list: ${parts}`);
+        return { status: "waiting for approval", actionId: id };
+      }
+      const r = changePantry(ctx.user.id, add, remove);
       ctx.changed.add("pantry");
       return r;
     }
@@ -506,8 +516,15 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       if (!isDate(args.date)) return { error: "Need the dinner's date." };
       const verdict = ["loved", "fine", "not_again", "skipped"].includes(String(args.verdict)) ? (args.verdict as Verdict) : null;
       if (!verdict) return { error: "verdict must be loved, fine, not_again, or skipped." };
+      const comment = typeof args.comment === "string" ? args.comment.trim().slice(0, 300) : null;
+      if (ctx.webInView) {
+        const night = (await getWeek(weekStart(args.date))).nights.find((n) => n.date === args.date);
+        if (!night?.title) return { error: "Nothing was planned that night." };
+        const id = createAction(ctx, "log_dinner", { date: args.date, verdict, comment }, `Save how ${weekday(args.date)}'s ${night.title} went: ${VERDICT_WORDS[verdict]}`);
+        return { status: "waiting for approval", actionId: id };
+      }
       try {
-        const r = await recordFeedback(ctx.user, args.date, verdict, typeof args.comment === "string" ? args.comment : null);
+        const r = await recordFeedback(ctx.user, args.date, verdict, comment);
         ctx.changed.add("week");
         return { saved: true, dinner: r.title, warning: r.warning };
       } catch (e) {
@@ -557,6 +574,16 @@ export async function executeAction(
       message = `Made the grocery list in Mealie: ${r.count} items (${r.url}).`;
       if (r.leftOff.length) message += ` Left off: ${r.leftOff.join(", ")}.`;
       if (r.missing.length) message += ` No recipe to shop from for ${r.missing.join(", ")}.`;
+      changed.push("week");
+    } else if (a.kind === "update_pantry") {
+      const r = changePantry(user.id, args.add ?? [], args.remove ?? []);
+      message = [r.added.length && `Added ${r.added.join(", ")} to the kitchen list.`, r.removed.length && `Took ${r.removed.join(", ")} off it.`]
+        .filter(Boolean)
+        .join(" ") || "The kitchen list already looked like that.";
+      changed.push("pantry");
+    } else if (a.kind === "log_dinner") {
+      const r = await recordFeedback(user, args.date, args.verdict, args.comment);
+      message = `Saved how ${r.title} went.${r.warning ? ` ${r.warning}` : ""}`;
       changed.push("week");
     } else if (a.kind === "remember") {
       const saved = addMemory(user.id, String(args.fact), "chat");
