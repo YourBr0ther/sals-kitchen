@@ -2,66 +2,76 @@
 
 ## Pieces
 
-| Piece | Job |
-|---|---|
-| Web app | Chat UI, taste profiles, week view. Streams Sal's replies |
-| Agent loop | Sends the conversation and tool definitions to the LLM, runs the tools it asks for, loops until Sal has a reply |
-| Mealie client | Thin wrapper over the Mealie REST API |
-| Calendar client | Reads the shared family calendar for the week |
-| SQLite | Users, profiles, conversations, pending week plans |
-| Media handling | Voice notes go to speech-to-text. Photos go to a vision-capable model |
+| Piece | Where | Job |
+|---|---|---|
+| Pages | `web/app/` | Setup, PIN login, and the kitchen screen (chat, week ticket, profiles) |
+| API routes | `web/app/api/` | Chat stream, week edits, send to Mealie, profiles, approvals, uploads, transcription |
+| Agent loop | `web/lib/sal/agent.ts` | Streams the model's reply, runs the tools it asks for, loops until Sal answers in plain text |
+| Prompt | `web/lib/sal/prompt.ts` | Persona, rules, today's date, the household's profiles, and the current week |
+| Tools | `web/lib/sal/tools.ts` | Tool schemas, what each one does, and the approval flow |
+| Mealie client | `web/lib/mealie.ts` | Thin wrapper over the Mealie REST API |
+| Calendar | `web/lib/calendar.ts` | Reads ICS feeds, expands repeating events, finds busy evenings |
+| Week | `web/lib/week.ts` | The week ticket: nights, overrides, sending to Mealie |
+| Web | `web/lib/web.ts` | Web search and the link reader (with private-address blocking) |
+| Vision | `web/lib/vision.ts` | Describes photos for the chat model |
+| Storage | `web/lib/db.ts` | SQLite schema and profile helpers |
 
 ## Tools Sal can call
 
 | Tool | What it does | Needs approval |
 |---|---|---|
-| `search_recipes(query, tags?)` | Search the Mealie recipe box | No |
+| `search_recipes(query)` | Search the Mealie recipe box | No |
 | `get_recipe(slug)` | Full recipe: ingredients, steps, time | No |
-| `read_calendar(start, end)` | Events for the week, used to mark nights off | No |
+| `recent_dinners(weeks)` | Dinners on Mealie's meal plan lately, to avoid repeats | No |
+| `get_week(week_of)` | Any week's ticket: busy nights, overrides, planned dishes | No |
+| `plan_nights(nights[])` | Write dishes onto the ticket, or mark nights off | No (it's a draft) |
 | `web_search(query)` | Find new recipes online | No |
-| `fetch_url(url)` | Read a page someone pasted | No |
-| `propose_week(days[])` | Show a draft plan in the week view | No |
-| `write_meal_plan(days[])` | Create Mealie meal plan entries | Yes |
-| `import_recipe_url(url)` | Add a web recipe to Mealie | Yes |
-| `update_profile(user, change)` | Add or remove a like, dislike, or note | Yes |
+| `read_link(url)` | Read a page. Recipe pages come back as structured ingredients and steps | No |
+| `import_recipe_url(url, plan_for?)` | Save a web recipe into Mealie, optionally onto a night | Yes |
+| `update_profile(person, changes[])` | Add or remove likes, won't-eats, allergies, notes | Yes |
 
-"Needs approval" means the app shows a confirm button and the tool runs only after a person taps it. The model can't get around this, because the app holds the call until then.
+An approval-gated tool doesn't run. It records a pending action and tells the model it's waiting. The chat shows the action as a card with approve and decline buttons. Tapping one runs (or drops) the action and adds an event line to the conversation, so Sal knows what happened on his next turn.
 
-## Mealie endpoints
+Sending the week to Mealie isn't a tool at all. Only the "Send to Mealie" button on the ticket does it.
 
-Mealie's API docs are served by every instance at `/docs`. The endpoints below are the ones Sal needs. Check them against the running version before building.
+## Mealie endpoints used
 
 | Action | Endpoint |
 |---|---|
 | Search recipes | `GET /api/recipes?search=...&perPage=...` |
 | Get a recipe | `GET /api/recipes/{slug}` |
-| Import by URL | `POST /api/recipes/create/url` |
+| Import by URL | `POST /api/recipes/create/url` (returns the new slug) |
 | List meal plans | `GET /api/households/mealplans?start_date=...&end_date=...` |
-| Create a meal plan entry | `POST /api/households/mealplans` with `date`, `entryType`, `recipeId` or `title` |
-| Shopping lists | `/api/households/shopping/lists` |
+| Create a dinner | `POST /api/households/mealplans` with `date`, `entryType: "dinner"`, and `recipeId` or `title` |
+| Delete a dinner | `DELETE /api/households/mealplans/{id}` |
 
-Auth is a long-lived API token created in Mealie under the user profile, sent as `Authorization: Bearer <token>`.
+Auth is a long-lived API token, sent as `Authorization: Bearer <token>`. Checked against Mealie v3.29.
 
 ## Data model (SQLite)
 
 ```
-users          id, name, role (adult | kid), avatar_color, login
-profiles       user_id, loves[], nopes[], allergies[], notes[], updated_at
-profile_log    id, user_id, change, source (chat | manual), created_at
-conversations  id, user_id, started_at
-messages       id, conversation_id, role, content, attachments[], created_at
-week_plans     id, week_start, status (draft | sent), days[] (json)
+users            id, name, role (adult | kid), color, pin_hash
+sessions         token, user_id, expires_at
+login_failures   user_id, count, locks, locked_until
+profiles         user_id, loves[], nopes[], allergies[], notes[]
+profile_log      user_id, by_user_id, change, source (chat | manual)
+messages         user_id, role (user | assistant | tool | event | reset), content, payload
+pending_actions  user_id, kind, args, summary, status
+nights           date, cooking (null = follow calendar), title, recipe_slug, recipe_id, source_url, note, mealie_entry_id
+uploads          id, user_id, mime   (files in DATA_DIR/uploads)
 ```
 
-Profiles are readable by everyone in the household. Adults edit their own profile and the kid's. `profile_log` keeps a history so a bad guess from Sal can be undone.
+Each person has one running conversation with Sal. "Start a new conversation" adds a `reset` marker, and Sal only reads messages after the latest one. The model sees at most the last 60 entries.
 
-## Deciding which nights are cooking nights
+The week is shared: there's one ticket for the household, and everyone sees the same nights.
 
-1. Pull the week's events from the shared calendar.
-2. Mark an evening as off if an event overlaps 5 to 8 PM, or if it's tagged as an all-day trip.
-3. Sal proposes meals for the rest and says which nights he skipped and why.
-4. Anyone can flip a night on or off in the week view.
+## Cooking nights
+
+1. Pull events for the week from every feed in `CALENDAR_ICS_URLS` (cached for 10 minutes).
+2. A timed event overlapping 5 to 8 PM marks that evening busy. All-day events count only if they look like being away. `#nocook` in a title always counts.
+3. Busy nights start as "no cooking". Anyone can flip a night either way, and that choice overrides the calendar.
+4. Sal plans the cooking nights and tells you which ones he skipped.
 
 ## Deployment
 
-One container on the same home cluster as Mealie. The app reaches Mealie over the internal service address, so the API token never crosses the internet. The app sits behind the same reverse proxy as everything else, with its own login.
+One container next to Mealie. The app reaches Mealie over the cluster network (`MEALIE_URL`) and links people to Mealie's public address (`MEALIE_PUBLIC_URL`). It needs a small persistent volume for `/data` and a single replica, since SQLite is a single file.
