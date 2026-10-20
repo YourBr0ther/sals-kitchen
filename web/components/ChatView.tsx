@@ -304,7 +304,15 @@ export default function ChatView({
                     {a.status === "pending" ? (
                       <div className="row">
                         <button className="yes" disabled={deciding === a.id || busy} onClick={() => decide(a, true)}>
-                          {deciding === a.id ? (a.kind === "import_recipe_url" ? "Saving…" : "Updating…") : a.kind === "import_recipe_url" ? "Save it" : "Yes, update"}
+                          {deciding === a.id
+                            ? "Working…"
+                            : a.kind === "import_recipe_url"
+                              ? "Save it"
+                              : a.kind === "remember"
+                                ? "Remember it"
+                                : a.kind === "forget"
+                                  ? "Forget it"
+                                  : "Yes, update"}
                         </button>
                         <button className="no" disabled={deciding === a.id || busy} onClick={() => decide(a, false)}>No thanks</button>
                       </div>

@@ -3,7 +3,7 @@ import { addMessage, addToolExchange, getActions, imageDataUrl, modelHistory, ph
 import { describePhoto } from "../vision";
 import { config } from "../config";
 import type { User } from "../db";
-import { maybeSummarize } from "../memory";
+import { maybeSummarize, webInWindow } from "../memory";
 import { getWeek } from "../week";
 import { systemPrompt } from "./prompt";
 import { runTool, TOOL_LABELS, TOOLS, type ToolContext } from "./tools";
@@ -51,7 +51,7 @@ type ToolCall = OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall;
  * until Sal answers in plain text, saving every step so the next turn has the context.
  */
 export async function* runTurn(user: User, signal?: AbortSignal): AsyncGenerator<SalEvent> {
-  const ctx: ToolContext = { user, actions: [], changed: new Set(), remembered: [] };
+  const ctx: ToolContext = { user, actions: [], changed: new Set(), remembered: [], webInView: webInWindow(user.id) };
   // text Sal wrote before tool calls; the chat shows it together with the final answer
   const said: string[] = [];
   try {

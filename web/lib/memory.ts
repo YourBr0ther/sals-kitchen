@@ -55,14 +55,14 @@ export function deleteMemory(userId: number, id: number): boolean {
 }
 
 /** Forget memories matching some words ("forget that I'm doing keto"). Returns what was removed. */
-export function forgetMatching(userId: number, about: string): string[] {
+export function forgetMatching(userId: number, about: string, dryRun = false): string[] {
   const words = norm(about).split(" ").filter((w) => w.length > 2);
   if (!words.length) return [];
   const hits = listMemories(userId).filter((m) => {
     const t = norm(m.text);
     return words.filter((w) => t.includes(w)).length >= Math.max(1, Math.ceil(words.length * 0.6));
   });
-  for (const h of hits) deleteMemory(userId, h.id);
+  if (!dryRun) for (const h of hits) deleteMemory(userId, h.id);
   return hits.map((h) => h.text);
 }
 
@@ -192,4 +192,11 @@ export async function maybeSummarize(userId: number, name: string, force = false
 export async function closeConversation(userId: number, name: string) {
   await maybeSummarize(userId, name, true);
   setState(userId, "", conversationState(userId).summarizedThrough);
+}
+
+const WEB_TOOLS = new Set(["web_search", "read_link", "import_recipe_url"]);
+
+/** Whether any web search or page text is still in the conversation the model sees. */
+export function webInWindow(userId: number): boolean {
+  return windowRows(userId).some((r) => r.role === "tool" && WEB_TOOLS.has(JSON.parse(r.payload).name));
 }

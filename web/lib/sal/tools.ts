@@ -197,8 +197,8 @@ export interface ToolContext {
   changed: Set<"week" | "profiles">;
   /** facts saved to this person's memory during the turn */
   remembered: string[];
-  /** set once web text has entered the turn; memory writes are off after that */
-  readWeb?: boolean;
+  /** web text is somewhere in what the model can see; memory changes then need the person's approval */
+  webInView: boolean;
 }
 
 function createAction(ctx: ToolContext, kind: string, args: unknown, summary: string) {
@@ -269,10 +269,10 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { updated: nights.length - errors.length, errors, week: weekBlock(await getWeek(first)) };
     }
     case "web_search":
-      ctx.readWeb = true;
+      ctx.webInView = true;
       return webSearch(String(args.query));
     case "read_link": {
-      ctx.readWeb = true;
+      ctx.webInView = true;
       const url = String(args.url ?? "");
       try {
         const r = await extractRecipe(url);
@@ -316,15 +316,26 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { status: "waiting for approval", actionId: id, name: recipe.name };
     }
     case "remember": {
-      // web text could try to plant a lasting "fact"; once Sal has read the web this turn, he can't save any
-      if (ctx.readWeb) return { error: "Can't save memories in a turn where you've read web pages. Ask them to confirm it in their next message." };
-      const saved = addMemory(ctx.user.id, String(args.fact ?? ""), "chat");
+      const fact = String(args.fact ?? "").trim().replace(/\s+/g, " ").slice(0, 200);
+      if (fact.length < 3) return { error: "Too short to save." };
+      // web text in view could be trying to plant a lasting "fact": ask the person instead of saving silently
+      if (ctx.webInView) {
+        const id = createAction(ctx, "remember", { fact }, `Remember: "${fact}"`);
+        return { status: "waiting for approval", actionId: id };
+      }
+      const saved = addMemory(ctx.user.id, fact, "chat");
       if (saved) ctx.remembered.push(saved);
-      return saved ? { remembered: saved } : { note: "Already remembered, or too short to save." };
+      return saved ? { remembered: saved } : { note: "Already remembered." };
     }
     case "forget": {
-      if (ctx.readWeb) return { error: "Can't change memories in a turn where you've read web pages. Ask them to confirm it in their next message." };
-      const removed = forgetMatching(ctx.user.id, String(args.about ?? ""));
+      const about = String(args.about ?? "").trim().slice(0, 200);
+      if (ctx.webInView) {
+        const matches = forgetMatching(ctx.user.id, about, true);
+        if (!matches.length) return { note: "Nothing matched; tell them what you do remember instead." };
+        const id = createAction(ctx, "forget", { about }, `Forget: "${matches.join('", "')}"`);
+        return { status: "waiting for approval", actionId: id };
+      }
+      const removed = forgetMatching(ctx.user.id, about);
       return removed.length ? { forgot: removed } : { note: "Nothing matched; tell them what you do remember instead." };
     }
     case "update_profile": {
@@ -374,6 +385,12 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
         message += ` Put it on ${args.planFor}.`;
         changed.push("week");
       }
+    } else if (a.kind === "remember") {
+      const saved = addMemory(user.id, String(args.fact), "chat");
+      message = saved ? `Sal will remember: ${saved}` : "Sal already remembered that.";
+    } else if (a.kind === "forget") {
+      const removed = forgetMatching(user.id, String(args.about));
+      message = removed.length ? `Sal forgot: ${removed.join("; ")}` : "Nothing left to forget.";
     } else if (a.kind === "update_profile") {
       const target = getUser(args.userId);
       if (!target || !canEditProfile(user, target)) throw new Error("Not allowed to change that profile.");
