@@ -55,7 +55,7 @@ export function deleteMemory(userId: number, id: number): boolean {
 }
 
 /** Forget memories matching some words ("forget that I'm doing keto"). Returns what was removed. */
-export function forgetMatching(userId: number, about: string, dryRun = false): string[] {
+export function forgetMatching(userId: number, about: string, dryRun = false): Memory[] {
   const words = norm(about).split(" ").filter((w) => w.length > 2);
   if (!words.length) return [];
   const hits = listMemories(userId).filter((m) => {
@@ -63,7 +63,7 @@ export function forgetMatching(userId: number, about: string, dryRun = false): s
     return words.filter((w) => t.includes(w)).length >= Math.max(1, Math.ceil(words.length * 0.6));
   });
   if (!dryRun) for (const h of hits) deleteMemory(userId, h.id);
-  return hits.map((h) => h.text);
+  return hits;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +194,16 @@ export async function closeConversation(userId: number, name: string) {
   setState(userId, "", conversationState(userId).summarizedThrough);
 }
 
-const WEB_TOOLS = new Set(["web_search", "read_link", "import_recipe_url"]);
+// tools whose results carry text from web pages (directly, or recipes that came from the web)
+export const WEB_TOOLS = new Set(["web_search", "read_link", "import_recipe_url", "get_recipe"]);
 
-/** Whether any web search or page text is still in the conversation the model sees. */
-export function webInWindow(userId: number): boolean {
-  return windowRows(userId).some((r) => r.role === "tool" && WEB_TOOLS.has(JSON.parse(r.payload).name));
+/**
+ * Whether web text has entered this conversation at any point since the last reset,
+ * including parts already folded into the summary.
+ */
+export function webInConversation(userId: number): boolean {
+  const d = getDb();
+  const reset = (d.prepare("select coalesce(max(id), 0) as id from messages where user_id = ? and role = 'reset'").get(userId) as { id: number }).id;
+  const rows = d.prepare("select payload from messages where user_id = ? and id > ? and role = 'tool'").all(userId, reset) as { payload: string }[];
+  return rows.some((r) => WEB_TOOLS.has(JSON.parse(r.payload).name));
 }

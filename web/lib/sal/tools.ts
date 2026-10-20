@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROFILE_LISTS, type ProfileChange, type ProfileList, type User } from "../db";
 import { addDays, isDate, localDate, weekStart } from "../dates";
 import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
-import { addMemory, forgetMatching } from "../memory";
+import { addMemory, deleteMemory, forgetMatching, WEB_TOOLS } from "../memory";
 import { extractRecipe, NoRecipeError, type Recipe } from "../recipe";
 import { webSearch } from "../web";
 import { getWeek, updateNight } from "../week";
@@ -223,7 +223,18 @@ function describeChange(name: string, change: ProfileChange): string {
 
 type Args = Record<string, unknown>;
 
+function withHeadings(lines: string[], headings?: { at: number; title: string }[]): string[] {
+  if (!headings?.length) return lines;
+  const out: string[] = [];
+  lines.forEach((line, i) => {
+    for (const h of headings) if (h.at === i) out.push(`[${h.title}]`);
+    out.push(line);
+  });
+  return out;
+}
+
 export async function runTool(name: string, args: Args, ctx: ToolContext): Promise<unknown> {
+  if (WEB_TOOLS.has(name)) ctx.webInView = true;
   switch (name) {
     case "search_recipes":
       return searchRecipes(String(args.query ?? ""));
@@ -269,10 +280,8 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return { updated: nights.length - errors.length, errors, week: weekBlock(await getWeek(first)) };
     }
     case "web_search":
-      ctx.webInView = true;
       return webSearch(String(args.query));
     case "read_link": {
-      ctx.webInView = true;
       const url = String(args.url ?? "");
       try {
         const r = await extractRecipe(url);
@@ -283,10 +292,17 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
           alreadyInBox: inBox ? { name: inBox.name, slug: inBox.slug } : null,
           name: r.name,
           description: r.description,
-          servings: r.recipeYield,
+          servings: r.servings ?? null,
+          makes: r.makes?.text ?? null,
+          yield: r.recipeYield,
+          prepTime: r.prepTime,
+          cookTime: r.cookTime,
           totalTime: r.totalTime,
-          ingredients: r.recipeIngredient,
-          steps: r.recipeInstructions,
+          // headings ("For the sauce") shown in place, so Sal reads the recipe the way the page lays it out
+          ingredients: withHeadings(r.recipeIngredient, r.ingredientHeadings),
+          steps: withHeadings(r.recipeInstructions, r.instructionHeadings),
+          nutrition: r.nutrition && Object.keys(r.nutrition).length ? r.nutrition : null,
+          notes: r.notes?.map((n) => (n.title ? `${n.title}: ${n.text}` : n.text)) ?? [],
         };
       } catch (e) {
         if (e instanceof NoRecipeError) return { url, importable: false, reason: e.message, title: e.title, excerpt: e.excerpt };
@@ -332,10 +348,11 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       if (ctx.webInView) {
         const matches = forgetMatching(ctx.user.id, about, true);
         if (!matches.length) return { note: "Nothing matched; tell them what you do remember instead." };
-        const id = createAction(ctx, "forget", { about }, `Forget: "${matches.join('", "')}"`);
+        // approval deletes exactly these, not whatever matches later
+        const id = createAction(ctx, "forget", { ids: matches.map((m) => m.id) }, `Forget: "${matches.map((m) => m.text).join('", "')}"`);
         return { status: "waiting for approval", actionId: id };
       }
-      const removed = forgetMatching(ctx.user.id, about);
+      const removed = forgetMatching(ctx.user.id, about).map((m) => m.text);
       return removed.length ? { forgot: removed } : { note: "Nothing matched; tell them what you do remember instead." };
     }
     case "update_profile": {
@@ -389,8 +406,9 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
       const saved = addMemory(user.id, String(args.fact), "chat");
       message = saved ? `Sal will remember: ${saved}` : "Sal already remembered that.";
     } else if (a.kind === "forget") {
-      const removed = forgetMatching(user.id, String(args.about));
-      message = removed.length ? `Sal forgot: ${removed.join("; ")}` : "Nothing left to forget.";
+      const ids = Array.isArray(args.ids) ? (args.ids as unknown[]).map(Number) : [];
+      const removed = ids.filter((id) => deleteMemory(user.id, id)).length;
+      message = removed ? `Sal forgot ${removed === 1 ? "that" : `${removed} things`}.` : "Nothing left to forget.";
     } else if (a.kind === "update_profile") {
       const target = getUser(args.userId);
       if (!target || !canEditProfile(user, target)) throw new Error("Not allowed to change that profile.");
