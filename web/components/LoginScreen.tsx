@@ -16,16 +16,21 @@ export default function LoginScreen({ people }: { people: User[] }) {
     if (!who) return;
     setBusy(true);
     setError("");
-    const res = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: who.id, pin: value }),
-    });
-    if (res.ok) {
-      window.location.href = "/";
-      return;
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: who.id, pin: value }),
+      });
+      if (res.ok) {
+        window.location.assign("/");
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "That didn't work. Try again.");
+    } catch {
+      setError(navigator.onLine ? "Can't reach the kitchen. Try again." : "You're offline. Try again once you're connected.");
     }
-    setError((await res.json()).error ?? "That didn't work.");
     setPin("");
     setBusy(false);
   }

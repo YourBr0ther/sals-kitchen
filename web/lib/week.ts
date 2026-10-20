@@ -34,7 +34,12 @@ type NightRow = {
   source_url: string | null;
   note: string | null;
   mealie_entry_id: string | null;
+  sent_signature: string | null;
 };
+
+/** What a night looked like when it went to Mealie; if it changes, the ticket stops saying "in Mealie". */
+const signature = (r: Pick<NightRow, "title" | "recipe_id" | "source_url" | "note">) =>
+  JSON.stringify([r.title ?? "", r.recipe_id ?? "", r.source_url ?? "", r.note ?? ""]);
 
 export async function getWeek(start = weekStart(localDate())): Promise<Week> {
   start = weekStart(start);
@@ -61,7 +66,7 @@ export async function getWeek(start = weekStart(localDate())): Promise<Week> {
       recipeId: r?.recipe_id ?? null,
       sourceUrl: r?.source_url ?? null,
       note: r?.note ?? null,
-      sentToMealie: Boolean(r?.mealie_entry_id),
+      sentToMealie: Boolean(r?.mealie_entry_id && override !== false && (override ?? busy.length === 0) && r.sent_signature === signature(r)),
     });
   }
   return { start, end, nights, calendar: { configured: cal.configured, error: cal.error } };
@@ -128,25 +133,36 @@ export async function updateNight(u: NightUpdate, byUserId: number) {
   ).run({ date: u.date, ...next, by: byUserId });
 }
 
-/** Write every cooking night that has a meal to Mealie as a dinner, replacing what this app sent before. */
-export async function sendWeekToMealie(start: string): Promise<{ sent: number; skipped: string[] }> {
+let sending: Promise<unknown> = Promise.resolve();
+
+/**
+ * Write every cooking night that has a meal to Mealie as a dinner, replacing what this app
+ * sent before. Sends run one at a time, so two people tapping at once can't duplicate dinners.
+ */
+export function sendWeekToMealie(start: string): Promise<{ sent: number; skipped: string[] }> {
+  const run = sending.then(() => sendNow(start));
+  sending = run.catch(() => {});
+  return run;
+}
+
+async function sendNow(start: string): Promise<{ sent: number; skipped: string[] }> {
   const week = await getWeek(start);
   const d = getDb();
   let sent = 0;
   const skipped: string[] = [];
   for (const n of week.nights) {
-    const row = d.prepare("select mealie_entry_id from nights where date = ?").get(n.date) as { mealie_entry_id: string | null } | undefined;
+    const row = d.prepare("select * from nights where date = ?").get(n.date) as NightRow | undefined;
     if (row?.mealie_entry_id) {
       await deleteMealPlan(row.mealie_entry_id);
-      d.prepare("update nights set mealie_entry_id = null where date = ?").run(n.date);
+      d.prepare("update nights set mealie_entry_id = null, sent_signature = null where date = ?").run(n.date);
     }
-    if (!n.cooking || !n.title) {
+    if (!n.cooking || !n.title || !row) {
       if (n.cooking) skipped.push(n.day);
       continue;
     }
     const text = [n.note, n.sourceUrl && !n.recipeId ? `Recipe: ${n.sourceUrl}` : null].filter(Boolean).join("\n");
     const entry = await createDinner({ date: n.date, title: n.recipeId ? "" : n.title, text, recipeId: n.recipeId });
-    d.prepare("update nights set mealie_entry_id = ? where date = ?").run(String(entry.id), n.date);
+    d.prepare("update nights set mealie_entry_id = ?, sent_signature = ? where date = ?").run(String(entry.id), signature(row), n.date);
     sent++;
   }
   return { sent, skipped };

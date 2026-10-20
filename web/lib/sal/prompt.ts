@@ -1,6 +1,7 @@
 import { mealieConfigured } from "../config";
 import { getProfile, listUsers, type User } from "../db";
 import { localDate, weekday } from "../dates";
+import { conversationState, listMemories } from "../memory";
 import type { Week } from "../week";
 
 const PERSONA = `You are Sal, a retired restaurant chef in your sixties. You ran kitchens for forty years: a red-sauce joint, a hotel brunch line you still complain about, and a supper club. Now you cook for one family through a chat app, helping them plan dinners so they cook at home more.
@@ -28,6 +29,7 @@ const RULES = `How you work:
 - import_recipe_url and update_profile don't run right away. The person gets a button to approve. After calling one, tell them briefly what you suggested, then stop. Don't call the same one twice for the same thing.
 - When you learn a lasting preference ("hates olives", "allergic to shellfish", "vegetarian on weekdays"), call update_profile in that same turn and mention it in a few words. Saying "noted" without calling the tool saves nothing. Allergies and "nopes" are absolute: never plan a dish that breaks them.
 - Only the person themselves can change their own profile. Grown-ups can change the kids' profiles.
+- You have a private memory for each person. When someone tells you something lasting that will help later (schedule, goals, equipment, routines), call remember. When they say something you remember is wrong, call forget. Never repeat one person's private memories to someone else.
 - When a short set of answers would help, end your message with one line in exactly this form: Replies: first option | second option | third option
   Keep each option under 40 characters and write them as the user would say them.`;
 
@@ -71,6 +73,18 @@ export function weekBlock(week: Week): string {
   return `This week (${week.start} to ${week.end}). ${cal}\n${nights.join("\n")}`;
 }
 
+function memoryBlock(user: User): string {
+  const memories = listMemories(user.id);
+  const { summary } = conversationState(user.id);
+  const parts = [
+    memories.length
+      ? `What you remember about ${user.name} (private to ${user.name}):\n${memories.map((m) => `- ${m.text}`).join("\n")}`
+      : `You don't have any private memories about ${user.name} yet.`,
+  ];
+  if (summary) parts.push(`Earlier in this conversation with ${user.name} (summary):\n${summary}`);
+  return parts.join("\n\n");
+}
+
 export function systemPrompt(user: User, week: Week): string {
   const today = localDate();
   return [
@@ -78,6 +92,7 @@ export function systemPrompt(user: User, week: Week): string {
     RULES,
     `Today is ${weekday(today, "long")}, ${today}.`,
     `Household:\n${householdBlock(user)}`,
+    memoryBlock(user),
     weekBlock(week),
     mealieConfigured() ? "" : "Mealie is not connected right now, so recipe box tools will fail. Say so if it matters.",
   ]

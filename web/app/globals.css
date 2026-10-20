@@ -358,3 +358,25 @@ input, textarea { font: inherit; color: inherit; }
 .fave-row p { margin: 3px 0 0; color: var(--muted); }
 
 .empty-chat .chips { flex-wrap: wrap; justify-content: center; margin-right: 0; padding-right: 0; overflow: visible; }
+
+/* views inside the main pane; both stay mounted so a streaming reply survives a tab switch */
+.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view[hidden] { display: none; }
+
+.banner { background: var(--mustard); color: var(--forest-ink); font-size: 13px; font-weight: 600; padding: 8px 16px; text-align: center; }
+.problem {
+  align-self: stretch; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: #fbe3df; color: #7a2216; border-radius: 14px; padding: 10px 12px; font-size: 14px;
+}
+.problem .ghost { flex: none; }
+.remembered { font-size: 12px; color: var(--muted); padding-left: 4px; }
+.remembered::before { content: "✎ "; }
+.install-help { margin: 0 4px 8px; padding: 10px 12px; background: var(--tile); border-radius: 12px; font-size: 14px; }
+.sheet .item:disabled, .ghost:disabled { opacity: .5; }
+
+.memory-box { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.memory-box h4 { margin-top: 0; }
+.memories { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
+.memories li { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; background: #f1ecdf; border-radius: 12px; padding: 8px 6px 8px 12px; font-size: 14px; }
+.memories button { border: 0; background: transparent; width: 32px; height: 32px; border-radius: 50%; color: var(--muted); flex: none; font-size: 16px; }
+.memories button:hover { background: #fff; color: var(--tomato); }

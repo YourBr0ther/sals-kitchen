@@ -1,20 +1,24 @@
+import { guarded, readJson } from "@/lib/http";
 import type { NextRequest } from "next/server";
 import { currentUser, unauthorized } from "@/lib/auth";
 import { isDate } from "@/lib/dates";
+import { MealieError } from "@/lib/mealie";
 import { getWeek, updateNight } from "@/lib/week";
 
-export async function GET(req: NextRequest) {
+export const GET = guarded("week GET", async function GET(req: NextRequest) {
   const user = await currentUser();
   if (!user) return unauthorized();
   const start = req.nextUrl.searchParams.get("start");
   return Response.json(await getWeek(isDate(start) ? start : undefined));
-}
+});
 
 /** Tap edits from the week ticket: flip a night on or off, or clear its meal. */
-export async function PATCH(req: Request) {
+export const PATCH = guarded("week PATCH", async function PATCH(req: Request) {
   const user = await currentUser();
   if (!user) return unauthorized();
-  const body = (await req.json()) as { date?: string; cooking?: boolean | null; clear?: boolean; title?: string };
+  const parsed = await readJson<{ date?: string; cooking?: boolean | null; clear?: boolean; title?: string }>(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.data;
   if (!isDate(body.date)) return Response.json({ error: "Bad date." }, { status: 400 });
   try {
     if (body.clear) {
@@ -24,7 +28,9 @@ export async function PATCH(req: Request) {
     }
     if (body.cooking !== undefined) await updateNight({ date: body.date, cooking: body.cooking }, user.id);
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 400 });
+    console.warn("[week PATCH]", e);
+    const message = e instanceof MealieError ? e.message : "Couldn't change that night. Try again.";
+    return Response.json({ error: message, week: await getWeek(body.date).catch(() => null) }, { status: 400 });
   }
   return Response.json(await getWeek(body.date));
-}
+});

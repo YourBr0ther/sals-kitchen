@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { User } from "@/lib/db";
 import type { Night, Week } from "@/lib/week";
 import { XIcon } from "./icons";
-import { api, jsonInit } from "./util";
+import { jsonInit } from "./util";
 
 const fmt = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -19,6 +19,8 @@ export default function WeekTicket({
   me,
   week,
   setWeek,
+  loadError,
+  onRetry,
   onPrev,
   onNext,
   onThisWeek,
@@ -26,46 +28,72 @@ export default function WeekTicket({
   me: User;
   week: Week | null;
   setWeek: (w: Week) => void;
+  loadError: string;
+  onRetry: () => void;
   onPrev: () => void;
   onNext: () => void;
   onThisWeek: () => void;
 }) {
   const [sending, setSending] = useState(false);
+  const [changing, setChanging] = useState<string | null>(null);
   const [note, setNote] = useState("");
 
   if (!week) {
     return (
       <>
         <div className="rail-bar" />
-        <article className="ticket"><header><b>THE WEEK</b><small>Pulling the ticket…</small></header></article>
+        <article className="ticket">
+          <header><b>THE WEEK</b><small>{loadError ? "Couldn't pull the ticket." : "Pulling the ticket…"}</small></header>
+          {loadError && (
+            <footer>
+              <p className="msgline" role="alert">{loadError}</p>
+              <button className="push" onClick={onRetry}>Try again</button>
+            </footer>
+          )}
+        </article>
       </>
     );
   }
 
-  async function patch(n: Night, body: object) {
+  /** POST/PATCH that hands back the server's error and, when there is one, the up-to-date week. */
+  async function request(url: string, init: RequestInit): Promise<{ ok: boolean; data: Record<string, unknown> }> {
     try {
-      setWeek(await api<Week>("/api/week", jsonInit("PATCH", { date: n.date, ...body })));
-    } catch (e) {
-      setNote((e as Error).message);
+      const res = await fetch(url, init);
+      if (res.status === 401) window.location.assign("/login");
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (data.week) setWeek(data.week as Week);
+      return { ok: res.ok, data };
+    } catch {
+      return { ok: false, data: { error: navigator.onLine ? "Couldn't reach the kitchen. Try again." : "You're offline. Try again once you're connected." } };
     }
   }
 
+  async function patch(n: Night, body: object) {
+    if (changing) return;
+    setChanging(n.date);
+    setNote("");
+    const r = await request("/api/week", jsonInit("PATCH", { date: n.date, ...body }));
+    if (r.ok) setWeek(r.data as unknown as Week);
+    else setNote(String(r.data.error ?? "Couldn't change that night. Try again."));
+    setChanging(null);
+  }
+
   async function send() {
-    if (!week) return;
+    if (!week || sending) return;
     setSending(true);
     setNote("");
-    try {
-      const r = await api<{ sent: number; skipped: string[]; week: Week }>("/api/week/send", jsonInit("POST", { start: week.start }));
-      setWeek(r.week);
+    const r = await request("/api/week/send", jsonInit("POST", { start: week.start }));
+    if (r.ok) {
+      const sent = Number(r.data.sent ?? 0);
+      const skipped = (r.data.skipped as string[]) ?? [];
       setNote(
-        `Sent ${r.sent} dinner${r.sent === 1 ? "" : "s"} to Mealie.` +
-          (r.skipped.length ? ` ${r.skipped.join(", ")} still ${r.skipped.length === 1 ? "needs" : "need"} a meal.` : ""),
+        `Sent ${sent} dinner${sent === 1 ? "" : "s"} to Mealie.` +
+          (skipped.length ? ` ${skipped.join(", ")} still ${skipped.length === 1 ? "needs" : "need"} a meal.` : ""),
       );
-    } catch (e) {
-      setNote((e as Error).message);
-    } finally {
-      setSending(false);
+    } else {
+      setNote(String(r.data.error ?? "Couldn't send the week. Try again."));
     }
+    setSending(false);
   }
 
   const cooking = week.nights.filter((n) => n.cooking).length;
@@ -107,10 +135,11 @@ export default function WeekTicket({
             </span>
             <span className="acts">
               {n.title && (
-                <button aria-label={`Clear ${n.day}'s meal`} onClick={() => patch(n, { clear: true })}><XIcon /></button>
+                <button aria-label={`Clear ${n.day}'s meal`} disabled={changing === n.date} onClick={() => patch(n, { clear: true })}><XIcon /></button>
               )}
               <button
                 aria-label={n.cooking ? `Mark ${n.day} as no cooking` : `Mark ${n.day} as a cooking night`}
+                disabled={changing === n.date}
                 onClick={() => patch(n, { cooking: !n.cooking })}
               >
                 <OnOffIcon on={!n.cooking} />

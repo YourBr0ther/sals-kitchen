@@ -1,3 +1,4 @@
+import { guarded } from "@/lib/http";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,10 +10,11 @@ const TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_BYTES = 6_000_000;
 
 /** Photos are resized on the phone before upload, so these stay small. */
-export async function POST(req: Request) {
+export const POST = guarded("uploads POST", async function POST(req: Request) {
   const user = await currentUser();
   if (!user) return unauthorized();
-  const form = await req.formData();
+  const form = await req.formData().catch(() => null);
+  if (!form) return Response.json({ error: "The upload was garbled. Try again." }, { status: 400 });
   const file = form.get("image");
   if (!(file instanceof File)) return Response.json({ error: "No photo." }, { status: 400 });
   if (!TYPES.has(file.type)) return Response.json({ error: "Send a JPEG, PNG, or WebP photo." }, { status: 415 });
@@ -23,4 +25,4 @@ export async function POST(req: Request) {
   fs.writeFileSync(dest, Buffer.from(await file.arrayBuffer()));
   getDb().prepare("insert into uploads (id, user_id, mime) values (?, ?, ?)").run(id, user.id, file.type);
   return Response.json({ id });
-}
+});

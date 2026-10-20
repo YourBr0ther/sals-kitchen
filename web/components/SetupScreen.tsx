@@ -19,16 +19,21 @@ export default function SetupScreen({ token }: { token: string }) {
     e.preventDefault();
     setBusy(true);
     setError("");
-    const res = await fetch("/api/setup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ members: rows, token }),
-    });
-    if (res.ok) window.location.href = "/login";
-    else {
-      setError((await res.json()).error ?? "That didn't work.");
-      setBusy(false);
+    try {
+      const res = await fetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ members: rows, token }),
+      });
+      if (res.ok) {
+        window.location.assign("/login");
+        return;
+      }
+      setError((await res.json().catch(() => ({}))).error ?? "That didn't work. Try again.");
+    } catch {
+      setError("Can't reach the kitchen. Try again.");
     }
+    setBusy(false);
   }
 
   return (

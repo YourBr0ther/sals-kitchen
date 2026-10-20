@@ -10,13 +10,18 @@ export function timeLabel(sqlite: string): string {
 }
 
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch {
+    throw new Error(navigator.onLine ? "Couldn't reach the kitchen. Try again." : "You're offline. Try again once you're connected.");
+  }
   if (res.status === 401) {
     window.location.href = "/login";
     throw new Error("Signed out");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+  if (!res.ok) throw new Error(data.error ?? (res.status >= 500 ? "The kitchen hit a snag. Try again in a moment." : "That didn't work. Try again."));
   return data as T;
 }
 

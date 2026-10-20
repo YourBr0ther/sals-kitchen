@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROFILE_LISTS, type ProfileChange, type ProfileList, type User } from "../db";
 import { addDays, isDate, localDate, weekStart } from "../dates";
 import { findBySourceUrl, getRecipe, importRecipe, listMealPlans, searchRecipes } from "../mealie";
+import { addMemory, forgetMatching } from "../memory";
 import { extractRecipe, NoRecipeError, type Recipe } from "../recipe";
 import { webSearch } from "../web";
 import { getWeek, updateNight } from "../week";
@@ -117,6 +118,34 @@ export const TOOLS: Tool[] = [
   {
     type: "function",
     function: {
+      name: "remember",
+      description:
+        "Save a lasting fact about the person you're talking to, private to them, for future conversations. " +
+        "Use it for things that help plan meals later but aren't food likes or dislikes: schedule (\"works late Thursdays\"), " +
+        "goals (\"cutting back on red meat\"), equipment (\"has an Instant Pot\"), skill, household routines. " +
+        "Food likes, won't-eats, and allergies go in update_profile instead. Saved right away, no approval needed.",
+      parameters: {
+        type: "object",
+        properties: { fact: { type: "string", description: "One short sentence about them, e.g. 'Works late on Thursdays.'" } },
+        required: ["fact"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "forget",
+      description: "Remove something you remember about the person you're talking to, when they say it's wrong or out of date.",
+      parameters: {
+        type: "object",
+        properties: { about: { type: "string", description: "Words from the memory to remove, e.g. 'keto'" } },
+        required: ["about"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "update_profile",
       description:
         "Ask to change someone's taste profile. The person gets an approve button. " +
@@ -156,6 +185,8 @@ export const TOOL_LABELS: Record<string, string> = {
   read_link: "Reading the page",
   import_recipe_url: "Asking to save a recipe",
   update_profile: "Asking to update a profile",
+  remember: "Making a note",
+  forget: "Crossing that out",
 };
 
 export interface ToolContext {
@@ -164,6 +195,8 @@ export interface ToolContext {
   actions: number[];
   /** what the client should refresh after the turn */
   changed: Set<"week" | "profiles">;
+  /** facts saved to this person's memory during the turn */
+  remembered: string[];
 }
 
 function createAction(ctx: ToolContext, kind: string, args: unknown, summary: string) {
@@ -278,6 +311,15 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       const id = createAction(ctx, "import_recipe_url", { url, recipe, planFor }, `Save "${recipe.name}" from ${host} to the recipe box`);
       return { status: "waiting for approval", actionId: id, name: recipe.name };
     }
+    case "remember": {
+      const saved = addMemory(ctx.user.id, String(args.fact ?? ""), "chat");
+      if (saved) ctx.remembered.push(saved);
+      return saved ? { remembered: saved } : { note: "Already remembered, or too short to save." };
+    }
+    case "forget": {
+      const removed = forgetMatching(ctx.user.id, String(args.about ?? ""));
+      return removed.length ? { forgot: removed } : { note: "Nothing matched; tell them what you do remember instead." };
+    }
     case "update_profile": {
       const target = getUserByName(String(args.person ?? ""));
       if (!target) return { error: `No one named ${String(args.person)} in the household.` };
@@ -309,7 +351,9 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
     | { id: number; kind: string; args: string; status: string; summary: string }
     | undefined;
   if (!a) throw new Error("No such request.");
-  if (a.status !== "pending") throw new Error("Already handled.");
+  // claim it before doing any work, so two taps (or two phones) can't both run it
+  const claimed = d.prepare("update pending_actions set status = 'running' where id = ? and status = 'pending'").run(a.id);
+  if (!claimed.changes) throw new Error("Already handled.");
   const args = JSON.parse(a.args);
   try {
     let message: string;

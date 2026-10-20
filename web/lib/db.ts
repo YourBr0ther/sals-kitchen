@@ -67,7 +67,7 @@ create table if not exists pending_actions (
   kind text not null,
   args text not null,
   summary text not null,
-  status text not null default 'pending' check (status in ('pending', 'approved', 'declined', 'failed')),
+  status text not null default 'pending',
   result text,
   created_at text not null default (datetime('now'))
 );
@@ -89,6 +89,20 @@ create table if not exists login_failures (
   locks integer not null default 0,
   locked_until integer not null default 0
 );
+create table if not exists memories (
+  id integer primary key,
+  user_id integer not null references users(id) on delete cascade,
+  text text not null,
+  source text not null check (source in ('chat', 'summary', 'manual')),
+  created_at text not null default (datetime('now'))
+);
+create index if not exists memories_user on memories(user_id, id);
+create table if not exists conversation_state (
+  user_id integer primary key references users(id) on delete cascade,
+  summary text not null default '',
+  summarized_through integer not null default 0,
+  updated_at text not null default (datetime('now'))
+);
 create table if not exists uploads (
   id text primary key,
   user_id integer not null references users(id) on delete cascade,
@@ -96,6 +110,33 @@ create table if not exists uploads (
   created_at text not null default (datetime('now'))
 );
 `;
+
+/** Columns and constraints added after the first deploy. Each step is safe to run again. */
+function migrate(d: Database.Database) {
+  const cols = (table: string) => (d.prepare(`pragma table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+  if (!cols("nights").includes("sent_signature")) d.exec("alter table nights add column sent_signature text");
+  // the first schema limited action statuses with a check; 'running' needs the table rebuilt without it
+  const ddl = (d.prepare("select sql from sqlite_master where name = 'pending_actions'").get() as { sql: string }).sql;
+  if (ddl.includes("check (status in")) {
+    d.transaction(() => {
+      d.exec(`create table pending_actions_new (
+        id integer primary key,
+        user_id integer not null references users(id) on delete cascade,
+        kind text not null,
+        args text not null,
+        summary text not null,
+        status text not null default 'pending',
+        result text,
+        created_at text not null default (datetime('now'))
+      )`);
+      d.exec("insert into pending_actions_new select id, user_id, kind, args, summary, status, result, created_at from pending_actions");
+      d.exec("drop table pending_actions");
+      d.exec("alter table pending_actions_new rename to pending_actions");
+    })();
+  }
+  // a crash mid-action leaves it 'running' forever; let it be tried again
+  d.exec("update pending_actions set status = 'pending' where status = 'running'");
+}
 
 let db: Database.Database | undefined;
 
@@ -106,6 +147,7 @@ export function getDb(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   // checkpoint the WAL and close cleanly when the pod is stopped
   for (const sig of ["SIGTERM", "SIGINT"] as const) {
     process.once(sig, () => {

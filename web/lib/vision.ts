@@ -13,7 +13,7 @@ Describe what matters for cooking in a few short lines:
 Plain text only. Don't guess at things you can't see.`;
 
 /** One vision call per photo; the chat model reads the descriptions instead of the images. */
-export async function describePhoto(dataUrl: string, userText: string): Promise<string> {
+export async function describePhoto(dataUrl: string, userText: string, signal?: AbortSignal): Promise<string> {
   const res = await llm().chat.completions.create({
     model: config.llm.visionModel,
     messages: [
@@ -27,6 +27,6 @@ export async function describePhoto(dataUrl: string, userText: string): Promise<
       },
     ],
     temperature: 0.2,
-  });
+  }, { signal, timeout: 60_000 });
   return (res.choices[0]?.message?.content ?? "").trim() || "(couldn't make out the photo)";
 }

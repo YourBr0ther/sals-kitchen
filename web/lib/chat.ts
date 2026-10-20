@@ -3,6 +3,7 @@ import path from "node:path";
 import type OpenAI from "openai";
 import { config } from "./config";
 import { getDb } from "./db";
+import { HISTORY_BUDGET, OLD_TOOL_CHARS, RECENT_TOOL_CHARS, rowCost, windowRows } from "./memory";
 
 type Role = "user" | "assistant" | "tool" | "event" | "reset";
 
@@ -18,6 +19,8 @@ export interface AssistantPayload {
   actions?: number[];
   /** everything Sal said this turn, including text before tool calls */
   display?: string;
+  /** facts Sal saved to this person's memory during the turn */
+  remembered?: string[];
 }
 export interface ToolPayload {
   tool_call_id: string;
@@ -33,42 +36,80 @@ export function addMessage(userId: number, role: Role, content: string, payload:
   return Number(r.lastInsertRowid);
 }
 
-function rowsSinceReset(userId: number, limit: number): Row[] {
-  const reset = getDb()
-    .prepare("select coalesce(max(id), 0) as id from messages where user_id = ? and role = 'reset'")
-    .get(userId) as { id: number };
-  const rows = getDb()
-    .prepare("select * from messages where user_id = ? and id > ? order by id desc limit ?")
-    .all(userId, reset.id, limit) as Row[];
-  return rows.reverse();
+/** Save an assistant tool call and all its results in one transaction. */
+export function addToolExchange(
+  userId: number,
+  text: string,
+  calls: OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall[],
+  results: { id: string; name: string; content: string }[],
+) {
+  getDb().transaction(() => {
+    addMessage(userId, "assistant", text, { tool_calls: calls });
+    for (const r of results) addMessage(userId, "tool", r.content, { tool_call_id: r.id, name: r.name });
+  })();
 }
 
 export function uploadPath(id: string) {
   return path.join(config.dataDir, "uploads", id.replace(/[^a-zA-Z0-9_-]/g, ""));
 }
 
-export function imageDataUrl(id: string): string | null {
-  const row = getDb().prepare("select mime from uploads where id = ?").get(id) as { mime: string } | undefined;
+export function imageDataUrl(id: string, userId: number): string | null {
+  const row = getDb().prepare("select mime from uploads where id = ? and user_id = ?").get(id, userId) as { mime: string } | undefined;
   const file = uploadPath(id);
   if (!row || !fs.existsSync(file)) return null;
   return `data:${row.mime};base64,${fs.readFileSync(file).toString("base64")}`;
 }
 
-const MAX_TOOL_CHARS = 6000;
-
-/** The conversation as the model sees it. Photos appear as their written descriptions. */
+/**
+ * The conversation as the model sees it: this person's messages since the last summary,
+ * newest first until the budget runs out. Tool results from the last two exchanges are
+ * kept long; older ones are trimmed, since a recipe page from three turns ago is mostly noise.
+ * Photos appear as their written descriptions.
+ */
 export function modelHistory(userId: number): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
-  const rows = rowsSinceReset(userId, 60);
-  // drop leading tool results whose assistant call got cut off by the limit
-  while (rows.length && (rows[0].role === "tool" || (rows[0].role === "assistant" && JSON.parse(rows[0].payload).tool_calls))) rows.shift();
+  const rows = windowRows(userId);
+  const userTurns = rows.map((r, i) => (r.role === "user" ? i : -1)).filter((i) => i >= 0);
+  const recentFrom = userTurns.length >= 2 ? userTurns[userTurns.length - 2] : 0;
+
+  let start = rows.length;
+  let used = 0;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const cost = rowCost(rows[i], i >= recentFrom);
+    if (used + cost > HISTORY_BUDGET && start < rows.length) break;
+    used += cost;
+    start = i;
+  }
+  // never start mid-exchange: tool results need the assistant call that asked for them
+  while (start < rows.length && rows[start].role !== "user" && rows[start].role !== "event") start++;
+
+  // an assistant tool call is only valid with every one of its results right after it;
+  // anything else (older data, an event that slipped in between) is left out
+  const keep = new Set<number>();
+  for (let i = start; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.role === "tool") continue; // kept only through its call, below
+    const calls = r.role === "assistant" ? (JSON.parse(r.payload) as AssistantPayload).tool_calls : undefined;
+    if (!calls?.length) {
+      keep.add(i);
+      continue;
+    }
+    const ids = new Set(calls.map((c) => c.id));
+    let j = i + 1;
+    while (j < rows.length && rows[j].role === "tool" && ids.delete((JSON.parse(rows[j].payload) as ToolPayload).tool_call_id)) j++;
+    if (ids.size) continue;
+    for (let k = i; k < j; k++) keep.add(k);
+    i = j - 1;
+  }
 
   const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-  for (const r of rows) {
+  for (let i = start; i < rows.length; i++) {
+    if (!keep.has(i)) continue;
+    const r = rows[i];
     const p = JSON.parse(r.payload);
     if (r.role === "user") {
       const u = p as UserPayload;
       const prefix = u.voice ? "(voice note) " : "";
-      const notes = (u.photoNotes ?? []).map((n, i) => `\n[photo ${i + 1}: ${n}]`).join("");
+      const notes = (u.photoNotes ?? []).map((n, k) => `\n[photo ${k + 1}: ${n}]`).join("");
       const missing = (u.attachments?.length ?? 0) > (u.photoNotes?.length ?? 0) ? "\n[sent a photo that couldn't be read]" : "";
       out.push({ role: "user", content: prefix + r.content + notes + missing });
     } else if (r.role === "assistant") {
@@ -76,7 +117,9 @@ export function modelHistory(userId: number): OpenAI.Chat.Completions.ChatComple
       if (a.tool_calls?.length) out.push({ role: "assistant", content: r.content || null, tool_calls: a.tool_calls });
       else out.push({ role: "assistant", content: r.content });
     } else if (r.role === "tool") {
-      out.push({ role: "tool", tool_call_id: (p as ToolPayload).tool_call_id, content: r.content.slice(0, MAX_TOOL_CHARS) });
+      const limit = i >= recentFrom ? RECENT_TOOL_CHARS : OLD_TOOL_CHARS;
+      const content = r.content.length > limit ? `${r.content.slice(0, limit)}… (trimmed)` : r.content;
+      out.push({ role: "tool", tool_call_id: (p as ToolPayload).tool_call_id, content });
     } else if (r.role === "event") {
       out.push({ role: "user", content: `[app event, not typed by the user] ${r.content}` });
     }
@@ -93,22 +136,22 @@ export interface VisibleMessage {
   voice?: boolean;
   chips?: string[];
   actions?: ActionView[];
+  remembered?: string[];
 }
 
 export interface ActionView {
   id: number;
   kind: string;
   summary: string;
-  status: "pending" | "approved" | "declined" | "failed";
+  status: "pending" | "running" | "approved" | "declined" | "failed";
   result: string | null;
 }
 
-export function getActions(ids: number[]): ActionView[] {
+export function getActions(ids: number[], userId: number): ActionView[] {
   if (!ids.length) return [];
-  const rows = getDb()
-    .prepare(`select id, kind, summary, status, result from pending_actions where id in (${ids.map(() => "?").join(",")})`)
-    .all(...ids) as ActionView[];
-  return rows;
+  return getDb()
+    .prepare(`select id, kind, summary, status, result from pending_actions where user_id = ? and id in (${ids.map(() => "?").join(",")})`)
+    .all(userId, ...ids) as ActionView[];
 }
 
 /** What the chat screen shows: everything except tool plumbing. */
@@ -136,7 +179,8 @@ export function visibleMessages(userId: number, limit = 80): VisibleMessage[] {
       attachments: p.attachments,
       voice: p.voice,
       chips: p.chips,
-      actions: p.actions ? getActions(p.actions) : undefined,
+      actions: p.actions ? getActions(p.actions, userId) : undefined,
+      remembered: p.remembered,
     });
   }
   return out;

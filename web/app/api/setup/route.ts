@@ -1,3 +1,4 @@
+import { guarded, readJson } from "@/lib/http";
 import { hashPin } from "@/lib/auth";
 import { getDb, listUsers } from "@/lib/db";
 
@@ -6,9 +7,11 @@ const COLORS = ["#F2B33D", "#9FD3B8", "#F6A99C", "#B9B2F0", "#8EC5F2", "#F2C7E1"
 type Member = { name?: string; role?: string; pin?: string };
 
 /** First run only: create the household. Refuses once anyone exists. */
-export async function POST(req: Request) {
+export const POST = guarded("setup POST", async function POST(req: Request) {
   if (listUsers().length) return Response.json({ error: "The household is already set up." }, { status: 409 });
-  const { members, token } = (await req.json()) as { members?: Member[]; token?: string };
+  const parsed = await readJson<{ members?: Member[]; token?: string }>(req);
+  if (!parsed.ok) return parsed.response;
+  const { members, token } = parsed.data;
   // on a public URL, only someone with the setup link can claim the household
   const expected = process.env.SETUP_TOKEN?.trim();
   if (expected && token !== expected) return Response.json({ error: "This setup link isn't valid." }, { status: 403 });
@@ -30,4 +33,4 @@ export async function POST(req: Request) {
     clean.forEach((m, i) => insert.run(m.name, m.role, COLORS[i % COLORS.length], m.role === "adult" ? hashPin(m.pin) : null));
   })();
   return Response.json({ ok: true });
-}
+});

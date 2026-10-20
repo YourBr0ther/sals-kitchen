@@ -18,17 +18,15 @@ function pickMime() {
 
 export default function Composer({
   busy,
-  error,
-  setError,
   onSend,
   onKeyboard,
 }: {
   busy: boolean;
-  error: string;
-  setError: (e: string) => void;
-  onSend: (text: string, attachments: string[], voice?: boolean) => void;
+  /** resolves false if the message never reached Sal */
+  onSend: (text: string, attachments: string[], voice?: boolean) => Promise<boolean>;
   onKeyboard: (open: boolean) => void;
 }) {
+  const [error, setError] = useState("");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -59,13 +57,21 @@ export default function Composer({
 
   const hasContent = text.trim() !== "" || attachments.length > 0;
 
-  function submit(e?: React.FormEvent) {
+  async function submit(e?: React.FormEvent) {
     e?.preventDefault();
     if (busy || uploading || !hasContent) return;
-    onSend(text.trim(), attachments.map((a) => a.id));
-    attachments.forEach((a) => URL.revokeObjectURL(a.preview));
+    const draft = { text, attachments };
+    setError("");
     setText("");
     setAttachments([]);
+    const ok = await onSend(draft.text.trim(), draft.attachments.map((a) => a.id));
+    if (ok) {
+      draft.attachments.forEach((a) => URL.revokeObjectURL(a.preview));
+    } else {
+      // it didn't go through: put the draft back instead of losing it
+      setText((t) => t || draft.text);
+      setAttachments((a) => (a.length ? a : draft.attachments));
+    }
   }
 
   async function addPhotos(files: FileList | null) {
@@ -125,9 +131,14 @@ export default function Composer({
           const form = new FormData();
           form.set("audio", new Blob(chunks, { type: rec.mimeType || "audio/webm" }), "voice");
           const { text: said } = await api<{ text: string }>("/api/transcribe", { method: "POST", body: form });
-          if (said) onSend(said, attachments.map((a) => a.id), true);
-          else setError("Couldn't make out any words. Try again?");
-          setAttachments([]);
+          if (!said) {
+            setError("Couldn't make out any words. Try again?");
+          } else if (await onSend(said, attachments.map((a) => a.id), true)) {
+            setAttachments([]);
+          } else {
+            // keep what was said so it isn't lost
+            setText((t) => (t ? `${t} ${said}` : said));
+          }
         } catch (e) {
           setError((e as Error).message);
         } finally {
@@ -138,8 +149,15 @@ export default function Composer({
       rec.start();
       setRecording({ started: Date.now() });
       setNow(Date.now());
-    } catch {
-      setError("Sal can't hear you. Allow the microphone for this site and try again.");
+    } catch (e) {
+      const name = (e as Error).name;
+      setError(
+        name === "NotAllowedError"
+          ? "Sal can't hear you. Allow the microphone for this app in your phone's settings, then try again."
+          : name === "NotFoundError"
+            ? "No microphone found on this device."
+            : "Couldn't start recording. Try again.",
+      );
     }
   }
 
@@ -166,7 +184,7 @@ export default function Composer({
           ))}
         </div>
       )}
-      <form onSubmit={submit} onMouseDown={(e) => e.target !== input.current && keepFocus(e)}>
+      <form onSubmit={(e) => void submit(e)} onMouseDown={(e) => e.target !== input.current && keepFocus(e)}>
         {recording ? (
           <>
             <button type="button" className="tool" aria-label="Cancel recording" onClick={() => stopRecording(true)}><XIcon /></button>
@@ -202,7 +220,7 @@ export default function Composer({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  submit();
+                  void submit();
                 }
               }}
             />

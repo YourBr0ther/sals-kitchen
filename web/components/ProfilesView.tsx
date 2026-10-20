@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Profile, ProfileList, User } from "@/lib/db";
+import type { Memory } from "@/lib/memory";
 import { api, initials, jsonInit } from "./util";
 
 export type ProfileEntry = { user: User; profile: Profile; editable: boolean };
@@ -29,14 +30,72 @@ function AddForm({ placeholder, onAdd }: { placeholder: string; onAdd: (v: strin
   );
 }
 
+/** What Sal privately remembers about the signed-in person. Only they see it. */
+function MemoryBox() {
+  const [memories, setMemories] = useState<Memory[] | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setMemories((await api<{ memories: Memory[] }>("/api/memories")).memories);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => void load(), 0);
+    // Sal may have noted something new since this screen last loaded
+    const onVisible = () => document.visibilityState === "visible" && void load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [load]);
+
+  async function change(init: RequestInit, url = "/api/memories") {
+    try {
+      setError("");
+      setMemories((await api<{ memories: Memory[] }>(url, init)).memories);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <div className="memory-box">
+      <h4>What Sal remembers about you</h4>
+      <p className="none">Only you can see these. Sal adds to them as you chat; remove anything that&apos;s wrong.</p>
+      {error && <p className="error-line" role="alert">{error}</p>}
+      {memories === null && !error && <p className="none">Loading…</p>}
+      {memories && !memories.length && <p className="none">Nothing yet. Tell Sal about your week, your schedule, or your kitchen.</p>}
+      <ul className="memories">
+        {memories?.map((m) => (
+          <li key={m.id}>
+            <span>{m.text}</span>
+            <button aria-label={`Forget: ${m.text}`} onClick={() => void change({ method: "DELETE" }, `/api/memories?id=${m.id}`)}>×</button>
+          </li>
+        ))}
+      </ul>
+      <AddForm placeholder="Tell Sal something to remember" onAdd={(text) => void change(jsonInit("POST", { text }))} />
+    </div>
+  );
+}
+
 export default function ProfilesView({
   me,
   profiles,
   setProfiles,
+  loadError,
+  onRetry,
 }: {
   me: User;
   profiles: ProfileEntry[];
   setProfiles: (p: ProfileEntry[]) => void;
+  loadError: string;
+  onRetry: () => void;
 }) {
   const [error, setError] = useState("");
 
@@ -58,6 +117,11 @@ export default function ProfilesView({
       <h2>Taste profiles</h2>
       <p className="sub">Sal fills these in as you chat. Everybody can see everybody&apos;s. You can edit your own, and grown-ups look after the kids&apos;.</p>
       {error && <p className="error-line" role="alert">{error}</p>}
+      {loadError && !profiles.length && (
+        <p className="error-line" role="alert">
+          {loadError} <button className="ghost" onClick={onRetry}>Try again</button>
+        </p>
+      )}
       <div className="pgrid">
         {sorted.map(({ user, profile, editable }) => (
           <div className="pbox" key={user.id}>
@@ -89,6 +153,7 @@ export default function ProfilesView({
             {!editable && SECTIONS.every(({ list }) => !profile[list].length) && (
               <p className="none">Sal doesn&apos;t know much about {user.name} yet.</p>
             )}
+            {user.id === me.id && <MemoryBox />}
           </div>
         ))}
       </div>
