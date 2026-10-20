@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sal's Kitchen</title>
+<link rel="icon" href="../assets/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Instrument+Sans:wght@400;500;600;700&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --tile: #E4EEE8;       /* subway tile */
+    --grout: #CFDDD5;
+    --forest: #1E4D3A;
+    --forest-ink: #0E1F18;
+    --tomato: #E2432F;
+    --mustard: #F2B33D;
+    --paper: #FFFFFF;
+    --ticket: #FFFDF6;
+    --muted: #5A6B63;
+    --line: #D5E1DA;
+    --sal-bubble: #1E4D3A;
+    --sal-text: #F2F6F3;
+    --me-bubble: #FFFFFF;
+    --radius-l: 22px;
+    --radius-s: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: "Instrument Sans", system-ui, sans-serif;
+    color: var(--forest-ink);
+    background-color: var(--tile);
+    background-image:
+      linear-gradient(var(--grout) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grout) 1px, transparent 1px);
+    background-size: 64px 32px;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--mustard); outline-offset: 2px; }
+
+  .app {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 248px minmax(0, 1fr) 340px;
+    gap: 16px;
+    padding: 16px;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+
+  /* sidebar */
+  .side {
+    background: var(--forest);
+    color: #E6EFEA;
+    border-radius: var(--radius-l);
+    padding: 22px 16px;
+    display: flex; flex-direction: column; gap: 26px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 0 6px; }
+  .brand img { width: 44px; height: 44px; border-radius: 12px; }
+  .brand b { font-family: "Shrikhand", serif; font-weight: 400; font-size: 22px; color: #fff; line-height: 1; }
+  .side h2 { font-size: 13px; font-weight: 600; color: #9FC1B0; margin: 0 6px 8px; }
+  .who { display: grid; gap: 4px; }
+  .who button {
+    display: flex; align-items: center; gap: 10px;
+    background: transparent; border: 0; border-radius: 12px;
+    padding: 8px 10px; text-align: left; color: #E6EFEA;
+  }
+  .who button[aria-pressed="true"] { background: rgba(255,255,255,.1); }
+  .who small { display: block; color: #9FC1B0; font-size: 12px; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: grid; place-items: center; font-weight: 700; font-size: 13px;
+    color: var(--forest-ink); flex: none;
+  }
+  .nav { display: grid; gap: 2px; }
+  .nav button {
+    background: transparent; border: 0; text-align: left;
+    padding: 9px 10px; border-radius: 10px; color: #E6EFEA; font-weight: 500;
+  }
+  .nav button[aria-current="page"] { background: var(--mustard); color: var(--forest-ink); }
+  .side .foot { margin-top: auto; font-size: 12px; color: #9FC1B0; padding: 0 6px; }
+  .side .foot span { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6FD39A; margin-right: 6px; }
+
+  /* main panes */
+  .pane {
+    background: var(--paper);
+    border-radius: var(--radius-l);
+    display: flex; flex-direction: column; min-height: 0;
+    box-shadow: 0 1px 0 var(--grout);
+  }
+  .pane-head {
+    padding: 18px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px;
+  }
+  .pane-head img { width: 40px; height: 40px; border-radius: 12px; }
+  .pane-head h1 { font-size: 17px; margin: 0; }
+  .pane-head p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  .chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 68ch; display: flex; flex-direction: column; gap: 4px; }
+  .msg .meta { font-size: 12px; color: var(--muted); }
+  .msg .bubble { padding: 12px 16px; border-radius: 18px; }
+  .msg.sal .bubble { background: var(--sal-bubble); color: var(--sal-text); border-top-left-radius: 6px; }
+  .msg.me { align-self: flex-end; align-items: flex-end; }
+  .msg.me .bubble { background: var(--tile); border-top-right-radius: 6px; }
+  .msg .bubble p { margin: 0 0 8px; } .msg .bubble p:last-child { margin: 0; }
+
+  .voice { display: flex; align-items: center; gap: 10px; }
+  .voice .bars { display: flex; gap: 3px; align-items: center; height: 22px; }
+  .voice .bars i { width: 3px; background: var(--forest); border-radius: 2px; }
+  .voice em { font-style: normal; color: var(--muted); font-size: 12px; }
+
+  .recipe-card {
+    display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: center;
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16);
+    border-radius: 14px; padding: 10px; margin-top: 10px;
+  }
+  .recipe-card .thumb { width: 64px; height: 64px; border-radius: 10px; }
+  .recipe-card b { display: block; }
+  .recipe-card small { color: #A9C9B9; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    border: 1px solid rgba(255,255,255,.3); background: transparent; color: var(--sal-text);
+    border-radius: 999px; padding: 5px 12px; font-size: 13px;
+  }
+  .chip:hover { background: rgba(255,255,255,.12); }
+
+  .composer { padding: 14px 16px 16px; border-top: 1px solid var(--line); }
+  .composer form {
+    display: flex; align-items: flex-end; gap: 6px;
+    border: 1.5px solid var(--line); border-radius: 18px; padding: 6px;
+    background: #fff;
+  }
+  .composer form:focus-within { border-color: var(--forest); }
+  .composer textarea {
+    flex: 1; border: 0; resize: none; font: inherit; padding: 8px 6px; min-height: 40px; max-height: 140px;
+    background: transparent; outline: none;
+  }
+  .tool {
+    width: 38px; height: 38px; border-radius: 12px; border: 0; background: transparent;
+    display: grid; place-items: center; color: var(--muted);
+  }
+  .tool:hover { background: var(--tile); color: var(--forest); }
+  .tool svg { width: 20px; height: 20px; }
+  .send { background: var(--tomato); color: #fff; }
+  .send:hover { background: #C93522; color: #fff; }
+  .hint { font-size: 12px; color: var(--muted); margin: 8px 6px 0; }
+
+  /* ticket rail */
+  .rail { background: transparent; box-shadow: none; gap: 14px; overflow-y: auto; }
+  .rail-bar {
+    height: 14px; border-radius: 7px; background: linear-gradient(#B9C6C0, #8E9C96);
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,.15); flex: none;
+  }
+  .ticket {
+    background: var(--ticket);
+    font-family: "Courier Prime", ui-monospace, monospace;
+    padding: 18px 18px 26px; margin: -8px 10px 0;
+    position: relative;
+    box-shadow: 0 10px 24px -14px rgba(14,31,24,.45);
+    transform: rotate(-.6deg);
+    transform-origin: top center;
+    animation: hang 900ms cubic-bezier(.2,.9,.3,1.2) both;
+  }
+  .ticket::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -10px; height: 10px;
+    background: radial-gradient(circle at 8px 0, transparent 7px, var(--ticket) 7.5px) 0 0 / 16px 10px repeat-x;
+  }
+  @keyframes hang { from { transform: rotate(-4deg) translateY(-14px); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .ticket { animation: none; } }
+  .ticket header { text-align: center; border-bottom: 1.5px dashed #BDB6A6; padding-bottom: 10px; margin-bottom: 8px; }
+  .ticket header b { font-size: 18px; display: block; }
+  .ticket header small { color: #7A7364; }
+  .day { display: grid; grid-template-columns: 46px 1fr auto; gap: 8px; padding: 9px 0; border-bottom: 1px dotted #D8D1C0; align-items: baseline; font-size: 14px; }
+  .day:last-of-type { border-bottom: 0; }
+  .day .d { font-weight: 700; }
+  .day .what small { display: block; color: #7A7364; font-size: 12px; }
+  .day.off .what { color: #9B9483; text-decoration: line-through; text-decoration-color: #C7BFAE; }
+  .day .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+  .tag.box { background: #DCEFE4; color: var(--forest); }
+  .tag.new { background: #FBE6C2; color: #7A4E00; }
+  .ticket footer { border-top: 1.5px dashed #BDB6A6; margin-top: 8px; padding-top: 12px; display: grid; gap: 8px; }
+  .ticket .total { display: flex; justify-content: space-between; font-size: 14px; }
+  .push {
+    font-family: "Instrument Sans", sans-serif; font-weight: 600;
+    background: var(--forest); color: #fff; border: 0; border-radius: 12px; padding: 11px 14px;
+  }
+  .push:hover { background: var(--forest-ink); }
+  .push[disabled] { background: #6FA387; cursor: default; }
+
+  .card {
+    background: var(--paper); border-radius: 16px; padding: 16px 18px; margin: 0 2px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 14px; }
+  .faves { display: grid; gap: 10px; }
+  .fave-row { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; font-size: 13px; }
+  .fave-row .avatar { width: 28px; height: 28px; font-size: 11px; }
+  .fave-row p { margin: 3px 0 0; color: var(--muted); }
+
+  /* profile view */
+  .profile { flex: 1; overflow-y: auto; padding: 24px; display: none; }
+  .profile.on { display: block; }
+  .profile h2 { font-family: "Shrikhand", serif; font-weight: 400; font-size: 28px; margin: 0 0 4px; }
+  .profile .sub { color: var(--muted); margin: 0 0 22px; max-width: 60ch; }
+  .pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .pbox { border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+  .pbox h3 { margin: 0 0 10px; font-size: 14px; }
+  .plist { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--tile); border-radius: 999px; padding: 5px 6px 5px 12px; font-size: 13px;
+  }
+  .pill button { border: 0; background: transparent; width: 20px; height: 20px; border-radius: 50%; line-height: 1; color: var(--muted); }
+  .pill button:hover { background: #fff; color: var(--tomato); }
+  .pill.no { background: #FBE3DF; }
+  .addpill { border: 1.5px dashed var(--line); background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 13px; color: var(--muted); }
+  .learned { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+
+  .hidden { display: none !important; }
+
+  /* mobile */
+  .tabs { display: none; }
+  @media (max-width: 1080px) {
+    .app { grid-template-columns: minmax(0, 1fr) 320px; }
+    .side { display: none; }
+  }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: minmax(0,1fr); padding: 0; gap: 0; height: 100dvh; }
+    .pane { border-radius: 0; }
+    .rail { display: none; padding: 16px; background: var(--tile); }
+    .app.show-week .main { display: none; }
+    .app.show-week .rail { display: flex; }
+    .tabs {
+      display: grid; grid-template-columns: repeat(3, 1fr); background: var(--forest);
+      position: sticky; bottom: 0;
+    }
+    .tabs button { background: transparent; border: 0; color: #CFE2D8; padding: 12px 0 14px; font-weight: 600; font-size: 13px; }
+    .tabs button[aria-current="page"] { color: var(--mustard); }
+    .chat, .profile { padding: 16px; }
+    .pane-head { padding: 14px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand"><img src="../assets/icon.svg" alt=""><b>Sal's<br>Kitchen</b></div>
+
+    <div>
+      <h2>Who's cooking?</h2>
+      <div class="who" id="who">
+        <button aria-pressed="true" data-user="Alex"><span class="avatar" style="background:#F2B33D">AL</span><span>Alex<small>Grown-up</small></span></button>
+        <button aria-pressed="false" data-user="Jordan"><span class="avatar" style="background:#9FD3B8">JO</span><span>Jordan<small>Grown-up</small></span></button>
+        <button aria-pressed="false" data-user="Pip"><span class="avatar" style="background:#F6A99C">PI</span><span>Pip<small>Age 7, head taster</small></span></button>
+      </div>
+    </div>
+
+    <nav class="nav" aria-label="Sections">
+      <button aria-current="page" data-view="chat">Talk to Sal</button>
+      <button data-view="profile">Taste profiles</button>
+      <button data-view="chat">Recipe box</button>
+      <button data-view="chat">Shopping list</button>
+    </nav>
+
+    <div class="foot"><span></span>Synced with Mealie, 214 recipes</div>
+  </aside>
+
+  <main class="pane main">
+    <div class="pane-head">
+      <img src="../assets/icon.svg" alt="">
+      <div>
+        <h1>Sal</h1>
+        <p>Your personal chef. 40 years on the line, still can't whisper.</p>
+      </div>
+    </div>
+
+    <div class="chat" id="chat" aria-live="polite">
+      <div class="msg sal">
+        <span class="meta">Sal, Sunday 4:12 PM</span>
+        <div class="bubble">
+          <p>Alex! I checked the family calendar. Tuesday is soccer, Friday you two have a date night. That leaves five nights for me to boss you around. Four if we're being honest about Saturday.</p>
+          <p>Want me to build the week from the recipe box, or should I go dig up something new?</p>
+          <div class="chips">
+            <button class="chip" data-say="Mostly the recipe box, one new thing">Mostly the box, one new thing</button>
+            <button class="chip" data-say="Surprise us, all new">Surprise us</button>
+            <button class="chip" data-say="Keep it under 30 minutes on weeknights">Under 30 min on weeknights</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg me">
+        <span class="meta">You, 4:13 PM</span>
+        <div class="bubble voice">
+          <span class="bars" aria-hidden="true"></span>
+          <span>Voice note, 0:14<br><em>"Mostly the box. Pip's been asking for tacos for, like, a week."</em></span>
+        </div>
+      </div>
+
+      <div class="msg sal">
+        <span class="meta">Sal, 4:13 PM</span>
+        <div class="bubble">
+          <p>A week? Kid's got patience. I waited eleven years for my mother's meatball recipe and she still left out the fennel. Tacos go on Wednesday.</p>
+          <p>For the new one, I found this on the web. Jordan's profile says "anything with miso," and it's 25 minutes.</p>
+          <div class="recipe-card">
+            <svg class="thumb" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="10" fill="#F2B33D"/><circle cx="32" cy="34" r="18" fill="#FFF7E3"/><circle cx="26" cy="31" r="5" fill="#E2432F"/><circle cx="37" cy="37" r="4" fill="#1E4D3A"/><circle cx="36" cy="27" r="3" fill="#7FB59B"/></svg>
+            <div><b>Miso-butter salmon with charred broccoli</b><small>From the web, not in your box yet</small></div>
+          </div>
+          <div class="chips">
+            <button class="chip" data-say="Add the salmon to Thursday">Add it to Thursday</button>
+            <button class="chip" data-say="Save it to Mealie but not this week">Just save it</button>
+            <button class="chip" data-say="Nah, show me something else">Show me another</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section class="profile" id="profile" aria-label="Taste profiles">
+      <h2>Taste profiles</h2>
+      <p class="sub">Sal fills these in as you chat. Everybody can see everybody's. You can only edit your own.</p>
+      <div class="pgrid" id="pgrid"></div>
+    </section>
+
+    <div class="composer">
+      <form id="form">
+        <button type="button" class="tool" aria-label="Attach a photo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 8"/></svg>
+        </button>
+        <button type="button" class="tool" aria-label="Paste a recipe link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+        </button>
+        <label class="hidden" for="input">Message Sal</label>
+        <textarea id="input" rows="1" placeholder="Tell Sal what you're in the mood for"></textarea>
+        <button type="button" class="tool" aria-label="Record a voice note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        </button>
+        <button type="submit" class="tool send" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+      <p class="hint">Text, voice notes, photos of your fridge, or a link to a recipe you saw.</p>
+    </div>
+  </main>
+
+  <aside class="pane rail" aria-label="This week">
+    <div class="rail-bar"></div>
+    <article class="ticket">
+      <header><b>THE WEEK</b><small>Oct 19 to Oct 25 &nbsp;/&nbsp; table for 3</small></header>
+      <div id="days"></div>
+      <footer>
+        <div class="total"><span>Cooking nights</span><b id="count">4 of 7</b></div>
+        <button class="push" id="push">Send week to Mealie</button>
+      </footer>
+    </article>
+
+    <section class="card">
+      <h3>Family favorites</h3>
+      <div class="faves">
+        <div class="fave-row"><span class="avatar" style="background:#F2B33D">AL</span><div><b>Alex</b><p>Smash burgers, chicken tikka, anything grilled</p></div></div>
+        <div class="fave-row"><span class="avatar" style="background:#9FD3B8">JO</span><div><b>Jordan</b><p>Miso everything, shakshuka, lemon pasta</p></div></div>
+        <div class="fave-row"><span class="avatar" style="background:#F6A99C">PI</span><div><b>Pip</b><p>Tacos, buttered noodles, "the green rice"</p></div></div>
+      </div>
+    </section>
+  </aside>
+
+  <nav class="tabs" aria-label="Sections">
+    <button aria-current="page" data-tab="chat">Chat</button>
+    <button data-tab="week">This week</button>
+    <button data-tab="profile">Profiles</button>
+  </nav>
+</div>
+
+<script>
+  const days = [
+    { d: "Sun", what: "Sheet-pan chicken thighs", note: "45 min", tag: "box" },
+    { d: "Mon", what: "Lemon ricotta pasta", note: "20 min", tag: "box" },
+    { d: "Tue", what: "Soccer night", note: "Leftovers", off: true },
+    { d: "Wed", what: "Pip's taco night", note: "30 min", tag: "box" },
+    { d: "Thu", what: "Open slot", note: "Sal's pitching something" },
+    { d: "Fri", what: "Date night", note: "You're on your own", off: true },
+    { d: "Sat", what: "Pizza from scratch?", note: "If you're feeling brave", tag: "new" },
+  ];
+  const profiles = {
+    Alex: { color: "#F2B33D", loves: ["Smash burgers", "Chicken tikka", "Anything grilled", "Hot sauce"], nope: ["Olives", "Raw onion"], learned: "Sal noticed: you say yes to spicy, no to anything over an hour on weeknights." },
+    Jordan: { color: "#9FD3B8", loves: ["Miso", "Shakshuka", "Lemon pasta", "Roasted veg"], nope: ["Cilantro"], learned: "Sal noticed: vegetarian about half the time, by choice." },
+    Pip: { color: "#F6A99C", loves: ["Tacos", "Buttered noodles", "The green rice", "Pancakes"], nope: ["Mushrooms", "Sauce touching other food"], learned: "Sal noticed: will eat broccoli if it's called a tree." },
+  };
+  let me = "Alex";
+
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+
+  function renderDays() {
+    $("#days").innerHTML = days.map(x => `
+      <div class="day ${x.off ? "off" : ""}">
+        <span class="d">${x.d}</span>
+        <span class="what">${x.what}<small>${x.note}</small></span>
+        ${x.tag ? `<span class="tag ${x.tag}">${x.tag === "box" ? "in box" : "new"}</span>` : "<span></span>"}
+      </div>`).join("");
+    const n = days.filter(x => !x.off && x.what !== "Open slot").length;
+    $("#count").textContent = `${n} of 7`;
+  }
+
+  function renderProfiles() {
+    $("#pgrid").innerHTML = Object.entries(profiles).map(([name, p]) => {
+      const mine = name === me;
+      const pill = (t, no) => `<span class="pill ${no ? "no" : ""}">${t}${mine ? `<button aria-label="Remove ${t}" data-rm="${name}|${no ? "nope" : "loves"}|${t}">&times;</button>` : ""}</span>`;
+      return `<div class="pbox">
+        <h3 style="display:flex;gap:8px;align-items:center"><span class="avatar" style="background:${p.color};width:26px;height:26px;font-size:11px">${name.slice(0,2).toUpperCase()}</span>${name}${mine ? " (you)" : ""}</h3>
+        <div class="plist">${p.loves.map(t => pill(t)).join("")}${mine ? '<button class="addpill">Add a favorite</button>' : ""}</div>
+        <div class="plist" style="margin-top:8px">${p.nope.map(t => pill(t, true)).join("")}</div>
+        <p class="learned">${p.learned}</p>
+      </div>`;
+    }).join("");
+  }
+
+  const bars = $(".voice .bars");
+  [8,14,20,12,18,22,10,16,6,14,20,9,15,11,18,7].forEach(h => { const i = document.createElement("i"); i.style.height = h + "px"; bars.appendChild(i); });
+
+  const replies = [
+    "Done. Thursday's salmon night. Write that down, or don't, I'm literally a calendar.",
+    "Ha. Bold. I respect it. Give me a second to raid the internet like it's a walk-in fridge.",
+    "Under thirty. Got it. You know who cooks in under thirty minutes? Me, in 1987, with a hangover. We'll be fine.",
+    "Saved to the recipe box. It'll sit there next to the bread machine recipe you swore you'd make.",
+  ];
+  let r = 0;
+  function say(text) {
+    const chat = $("#chat");
+    chat.insertAdjacentHTML("beforeend", `<div class="msg me"><span class="meta">${me}, just now</span><div class="bubble"><p></p></div></div>`);
+    chat.lastElementChild.querySelector("p").textContent = text;
+    chat.scrollTop = chat.scrollHeight;
+    setTimeout(() => {
+      chat.insertAdjacentHTML("beforeend", `<div class="msg sal"><span class="meta">Sal, just now</span><div class="bubble"><p>${replies[r++ % replies.length]}</p></div></div>`);
+      if (/thursday/i.test(text)) { days[4] = { d: "Thu", what: "Miso-butter salmon", note: "25 min", tag: "new" }; renderDays(); }
+      chat.scrollTop = chat.scrollHeight;
+    }, 650);
+  }
+
+  $("#form").addEventListener("submit", e => { e.preventDefault(); const v = $("#input").value.trim(); if (v) { say(v); $("#input").value = ""; } });
+  $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#form").requestSubmit(); } });
+  document.addEventListener("click", e => {
+    const chip = e.target.closest("[data-say]"); if (chip) say(chip.dataset.say);
+    const rm = e.target.closest("[data-rm]");
+    if (rm) { const [n, k, t] = rm.dataset.rm.split("|"); profiles[n][k] = profiles[n][k].filter(x => x !== t); renderProfiles(); }
+  });
+
+  function show(view) {
+    const prof = view === "profile";
+    $("#chat").classList.toggle("hidden", prof);
+    $(".composer").classList.toggle("hidden", prof);
+    $("#profile").classList.toggle("on", prof);
+    $("#app").classList.toggle("show-week", view === "week");
+    $$(".nav button").forEach(b => b.toggleAttribute("aria-current", false));
+    $$(`.nav button[data-view="${prof ? "profile" : "chat"}"]`)[0].setAttribute("aria-current", "page");
+    $$(".tabs button").forEach(b => b.toggleAttribute("aria-current", b.dataset.tab === view));
+    $$(".tabs button[aria-current]").forEach(b => b.setAttribute("aria-current", "page"));
+  }
+  $$(".nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
+  $$(".tabs button").forEach(b => b.addEventListener("click", () => show(b.dataset.tab)));
+
+  $$("#who button").forEach(b => b.addEventListener("click", () => {
+    $$("#who button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    me = b.dataset.user; renderProfiles();
+  }));
+
+  $("#push").addEventListener("click", e => { e.target.disabled = true; e.target.textContent = "Sent to Mealie"; });
+
+  renderDays(); renderProfiles();
+</script>
+</body>
+</html>

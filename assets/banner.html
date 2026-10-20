@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sal's Kitchen banner</title>
+<!-- Source for banner.png. Render at 1280x420 (2x device scale) and screenshot. -->
+<link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Instrument+Sans:wght@400;600&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; }
+  body {
+    width: 1280px; height: 420px; overflow: hidden;
+    background-color: #E4EEE8;
+    background-image: linear-gradient(#CFDDD5 1px, transparent 1px), linear-gradient(90deg, #CFDDD5 1px, transparent 1px);
+    background-size: 64px 32px;
+    font-family: "Instrument Sans", sans-serif; color: #0E1F18;
+    display: grid; grid-template-columns: 1fr 360px; align-items: center;
+    padding: 0 72px; box-sizing: border-box; gap: 48px;
+  }
+  .left { display: flex; gap: 34px; align-items: center; }
+  .left img { width: 168px; height: 168px; border-radius: 40px; box-shadow: 0 18px 30px -18px rgba(14,31,24,.6); }
+  h1 { font-family: "Shrikhand", serif; font-weight: 400; font-size: 84px; line-height: 1; margin: 0 0 14px; color: #1E4D3A; }
+  p { font-size: 24px; line-height: 1.4; margin: 0; color: #33463D; max-width: 30ch; }
+  .rail { height: 14px; border-radius: 7px; background: linear-gradient(#B9C6C0, #8E9C96); }
+  .ticket {
+    background: #FFFDF6; font-family: "Courier Prime", monospace; margin: -6px 16px 0; padding: 16px 18px 22px;
+    transform: rotate(-1.2deg); transform-origin: top center; position: relative;
+    box-shadow: 0 16px 28px -16px rgba(14,31,24,.55); font-size: 15px;
+  }
+  .ticket::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -10px; height: 10px;
+    background: radial-gradient(circle at 8px 0, transparent 7px, #FFFDF6 7.5px) 0 0 / 16px 10px repeat-x;
+  }
+  .ticket b.h { display: block; text-align: center; font-size: 17px; border-bottom: 1.5px dashed #BDB6A6; padding-bottom: 8px; margin-bottom: 4px; }
+  .row { display: grid; grid-template-columns: 44px 1fr; padding: 5px 0; border-bottom: 1px dotted #D8D1C0; }
+  .row:last-child { border: 0; }
+  .off { color: #A39C8B; text-decoration: line-through; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <img src="icon.svg" alt="">
+    <div>
+      <h1>Sal's Kitchen</h1>
+      <p>A personal chef in a chat window. He plans the week, raids your recipe box, and roasts your takeout habit.</p>
+    </div>
+  </div>
+  <div>
+    <div class="rail"></div>
+    <div class="ticket">
+      <b class="h">THE WEEK</b>
+      <div class="row"><b>Mon</b><span>Lemon ricotta pasta</span></div>
+      <div class="row off"><b>Tue</b><span>Soccer night</span></div>
+      <div class="row"><b>Wed</b><span>Taco night</span></div>
+      <div class="row"><b>Thu</b><span>Miso-butter salmon</span></div>
+      <div class="row off"><b>Fri</b><span>Date night</span></div>
+    </div>
+  </div>
+</body>
+</html>
