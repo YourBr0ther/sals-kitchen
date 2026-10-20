@@ -22,6 +22,8 @@ The goal is simple. We want to cook at home more, and planning was always the pa
 
 **Learns what everyone likes.** Each person has a taste profile: favorites, won't-eat, allergies, and things Sal noticed. Sal fills it in from conversation. Everyone can see everyone's profile. You edit your own, and grown-ups look after the kids'. Allergies and won't-eats are hard rules for the planner.
 
+**Remembers each of you, separately.** Sal keeps a private memory for each person: your schedule, your goals, what's in your kitchen. Long conversations get summarized so he keeps the thread without rereading everything. You can see and delete what he remembers about you on the Profiles screen, and nobody else can see it.
+
 **Asks before changing anything that matters.** Saving a recipe to Mealie and changing a profile show an approve button in the chat. Nothing runs until a person taps it. The week ticket is a draft, so Sal edits it freely.
 
 ## Talking to him
@@ -36,6 +38,10 @@ He talks like a guy who's run a kitchen for forty years and has stories about mo
 <p align="center">
   <img src="docs/screenshot.png" alt="Desktop layout: sidebar, chat with Sal, and the week ticket" width="100%">
 </p>
+
+## On your phone
+
+It's built phone-first and installs like an app. Open it in Safari or Chrome, tap your avatar, then "Add Sal to your home screen". It opens full screen with its own icon, and there are long-press shortcuts for Chat and This week. If your connection drops mid-reply, the app catches up when you're back. A message that didn't send stays in the box.
 
 ## How it works
 
@@ -109,6 +115,7 @@ I ran the same planning conversation through a few models. GLM 5.3 did everythin
 - Sessions are random tokens in an httpOnly cookie, valid for 180 days.
 - The link reader refuses private and loopback addresses, so a pasted link or a search result can't make the server fetch things on your home network.
 - Web pages and search results go to the model as reference material, and anything with side effects waits for a person to approve it.
+- Photos and memories are private to the person they belong to. The service worker never caches API responses, so chats don't sit on the device.
 
 ## Repo layout
 

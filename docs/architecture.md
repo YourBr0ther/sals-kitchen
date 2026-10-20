@@ -15,7 +15,9 @@
 | Web | `web/lib/web.ts` | Web search, the public-only page fetcher, photo downloads |
 | Recipes | `web/lib/recipe.ts` | Turns a web page into a recipe, for both the link reader and the Mealie import |
 | Vision | `web/lib/vision.ts` | Describes photos for the chat model |
-| Storage | `web/lib/db.ts` | SQLite schema and profile helpers |
+| Memory | `web/lib/memory.ts` | Conversation window, rolling summaries, and each person's private memories |
+| Storage | `web/lib/db.ts` | SQLite schema, migrations, and profile helpers |
+| PWA | `web/public/sw.js`, `web/app/manifest.ts`, `web/components/Pwa.tsx` | Service worker, manifest, install prompt |
 
 ## Tools Sal can call
 
@@ -30,6 +32,8 @@
 | `read_link(url)` | Read a page. Recipes come back as ingredients and steps with `importable: true` | No |
 | `import_recipe_url(url, plan_for?)` | Save a web recipe into Mealie, optionally onto a night. Refused up front if the page has no recipe | Yes |
 | `update_profile(person, changes[])` | Add or remove likes, won't-eats, allergies, notes | Yes |
+| `remember(fact)` | Save a private fact about the person talking (schedule, goals, equipment) | No, but the chat shows a note |
+| `forget(about)` | Remove a memory the person says is wrong | No |
 
 An approval-gated tool doesn't run. It records a pending action and tells the model it's waiting. The chat shows the action as a card with approve and decline buttons. Tapping one runs (or drops) the action and adds an event line to the conversation, so Sal knows what happened on his next turn.
 
@@ -72,21 +76,47 @@ Auth is a long-lived API token, sent as `Authorization: Bearer <token>`. Checked
 users            id, name, role (adult | kid), color, pin_hash
 sessions         token, user_id, expires_at
 login_failures   user_id, count, locks, locked_until
+memories         user_id, text, source (chat | summary | manual)
+conversation_state  user_id, summary, summarized_through
 profiles         user_id, loves[], nopes[], allergies[], notes[]
 profile_log      user_id, by_user_id, change, source (chat | manual)
 messages         user_id, role (user | assistant | tool | event | reset), content, payload
-pending_actions  user_id, kind, args, summary, status
-nights           date, cooking (null = follow calendar), title, recipe_slug, recipe_id, source_url, note, mealie_entry_id
+pending_actions  user_id, kind, args, summary, status (pending | running | approved | declined | failed)
+nights           date, cooking (null = follow calendar), title, recipe_slug, recipe_id, source_url, note, mealie_entry_id, sent_signature
 uploads          id, user_id, mime   (files in DATA_DIR/uploads)
 ```
 
-Each person has one running conversation with Sal. "Start a new conversation" adds a `reset` marker, and Sal only reads messages after the latest one. The model sees at most the last 60 entries.
+Each person has one running conversation with Sal. "Start a new conversation" adds a `reset` marker, and Sal only reads messages after the latest one. See Memory above for how much of it the model sees.
 
 The week is shared: there's one ticket for the household, and everyone sees the same nights.
 
+## Memory
+
+Each person's memory with Sal is separate. Nothing from one person's chats or memories goes into another person's conversation. Taste profiles are the one shared thing, by design.
+
+- **Conversation window.** The model sees this person's messages since the last "new conversation" and since the last summary. They go in newest first until about 30,000 characters. Tool results from the last two exchanges are kept long (6,000 characters each). Older ones are cut to 400, since a recipe page from three turns ago is mostly noise. A tool call is only sent along with all of its results, so an interrupted turn can't break later ones.
+- **Rolling summary.** After a turn, if the window passes about 36,000 characters, the oldest part is summarized in the background. That covers decisions, plans, open questions, and recipes with links. The summary goes into the system prompt and the folded messages leave the window.
+- **Memories.** These are short facts about the person that outlive conversations: schedule, goals, kitchen equipment, routines. Sal saves them with `remember`, and the summarizer pulls out new ones too. They're capped at 80 per person, and the automatic ones are dropped first. People see theirs on the Profiles screen and can add or delete them there.
+- **New conversation.** The old conversation's facts are saved to memory, then the window and summary start fresh.
+
+## Errors
+
+- **API routes:** every route is wrapped so an unexpected error is logged and returns JSON the app can show. Request bodies are parsed safely and get a 400 if they're garbled.
+- **Chat turns:** each turn has a 4-minute deadline and the AI calls have their own timeouts and retries. Failures become plain messages, and the ones that might clear up get a "Try again" button. The server sends a keepalive every 15 seconds so phones and proxies don't drop a quiet stream.
+- **Dropped connections:** if the app loses the stream (backgrounded, lost signal), it asks the server whether Sal is still working and polls until his reply is saved. A message that never reached the server is taken back and the draft restored.
+- **Approvals:** claimed atomically, so a double tap or a second phone can't run one twice. A request that's already been handled sends back its current state.
+- **Week sends:** run one at a time. If one fails partway, the ticket reloads to show what went through.
+
+## PWA
+
+- **Install:** the manifest has standalone display, portrait orientation, regular and maskable icons, and shortcuts for Chat and This week (`/?tab=week`). Apple's meta tags make the iPhone home-screen app open full screen.
+- **Service worker** (`public/sw.js`): pages always load from the network, with `offline.html` when there's none. Build assets, icons, and fonts are cached, since their URLs change whenever they do. Nothing under `/api` is cached, so no one's chat is ever stored on the device.
+- **Install prompt:** the menu offers "Add Sal to your home screen". Chrome and Android show their install prompt, and on iPhone a tap shows the Share → Add to Home Screen steps.
+- **Offline:** an offline banner appears, and when the connection comes back the app reloads the chat, the week, and profiles.
+
 ## Cooking nights
 
-1. Pull events for the week from every feed in `CALENDAR_ICS_URLS` (cached for 10 minutes).
+1. Pull events for the week from every feed in `CALENDAR_ICS_URLS`. Feeds are cached for 10 minutes, each fetch has a 15-second timeout, and a failed refresh keeps the last good copy. Repeats, moved instances, skipped dates, cancelled events, and "free" events are handled by node-ical's expansion.
 2. A timed event overlapping 5 to 8 PM marks that evening busy. All-day events count only if they look like being away. `#nocook` in a title always counts.
 3. Busy nights start as "no cooking". Anyone can flip a night either way, and that choice overrides the calendar.
 4. Sal plans the cooking nights and tells you which ones he skipped.
