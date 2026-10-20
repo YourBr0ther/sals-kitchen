@@ -2,7 +2,7 @@ import dns from "node:dns";
 import dnsp from "node:dns/promises";
 import net from "node:net";
 import ipaddr from "ipaddr.js";
-import { Agent, fetch as undiciFetch } from "undici";
+import { Agent, fetch as undiciFetch, type Response as UndiciResponse } from "undici";
 import { config } from "./config";
 
 export interface SearchResult {
@@ -221,8 +221,31 @@ export async function fetchImage(raw: string): Promise<{ bytes: Buffer; ext: str
     }
     const ext = IMAGE_TYPES[(res.headers.get("content-type") ?? "").split(";")[0].trim()];
     if (!res.ok || !ext) return null;
-    const bytes = Buffer.from(await res.arrayBuffer());
-    return bytes.length <= 8_000_000 ? { bytes, ext } : null;
+    const bytes = await readCapped(res, 8_000_000);
+    return bytes ? { bytes, ext } : null;
   }
   return null;
+}
+
+/** Read a response body, giving up (null) as soon as it passes `max` bytes. */
+async function readCapped(res: UndiciResponse, max: number): Promise<Buffer | null> {
+  if (Number(res.headers.get("content-length") ?? 0) > max) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = (await reader.read()) as { done: boolean; value: Uint8Array };
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }
