@@ -1,5 +1,8 @@
-import dns from "node:dns/promises";
+import dns from "node:dns";
+import dnsp from "node:dns/promises";
 import net from "node:net";
+import ipaddr from "ipaddr.js";
+import { Agent, fetch as undiciFetch } from "undici";
 import { config } from "./config";
 
 export interface SearchResult {
@@ -28,30 +31,43 @@ export async function webSearch(query: string): Promise<SearchResult[]> {
   });
 }
 
-function isPrivateAddress(ip: string): boolean {
-  if (net.isIPv6(ip)) {
-    const v = ip.toLowerCase();
-    if (v.startsWith("::ffff:")) return isPrivateAddress(v.slice(7));
-    return v === "::1" || v === "::" || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80");
+/** Only ordinary public unicast addresses. Covers private, loopback, link-local, CGNAT, multicast, mapped and NAT64 IPv6. */
+function isPublicAddress(ip: string): boolean {
+  try {
+    const addr = ipaddr.process(ip); // unwraps IPv4-mapped IPv6
+    return addr.range() === "unicast";
+  } catch {
+    return false;
   }
-  const [a, b] = ip.split(".").map(Number);
-  return (
-    a === 10 ||
-    a === 127 ||
-    a === 0 ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127)
-  );
 }
 
-/** Pages come from links people paste and from web search, so keep the fetcher off the home network. */
-async function assertPublicUrl(raw: string): Promise<URL> {
+/**
+ * Links come from people and from web search, so keep fetches off the home network.
+ * The check happens inside the connection's DNS lookup, so the address that was checked
+ * is the one the socket connects to (no DNS rebinding between check and fetch).
+ */
+const publicOnly = new Agent({
+  connect: {
+    lookup(hostname, options, callback) {
+      dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+        if (err) return callback(err, "", 4);
+        const list = addresses as unknown as dns.LookupAddress[];
+        const bad = list.find((a) => !isPublicAddress(a.address));
+        if (bad || !list.length) return callback(new Error("That link points at a private network address."), "", 4);
+        if ((options as { all?: boolean }).all) return (callback as unknown as (e: null, a: dns.LookupAddress[]) => void)(null, list);
+        callback(null, list[0].address, list[0].family);
+      });
+    },
+  },
+});
+
+/** Throws unless the URL is http(s) and its host resolves only to public addresses. */
+export async function assertPublicUrl(raw: string): Promise<URL> {
   const url = new URL(raw);
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Only http and https links work.");
-  const addrs = net.isIP(url.hostname) ? [{ address: url.hostname }] : await dns.lookup(url.hostname, { all: true });
-  if (addrs.some((a) => isPrivateAddress(a.address))) throw new Error("That link points at a private network address.");
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const addrs = net.isIP(host) ? [{ address: host }] : await dnsp.lookup(host, { all: true });
+  if (!addrs.length || addrs.some((a) => !isPublicAddress(a.address))) throw new Error("That link points at a private network address.");
   return url;
 }
 
@@ -60,7 +76,8 @@ const MAX_BYTES = 3_000_000;
 async function fetchText(raw: string): Promise<string> {
   let url = await assertPublicUrl(raw);
   for (let hop = 0; hop < 5; hop++) {
-    const res = await fetch(url, {
+    const res = await undiciFetch(url, {
+      dispatcher: publicOnly,
       redirect: "manual",
       headers: { "User-Agent": "Mozilla/5.0 (compatible; SalsKitchen/1.0)", Accept: "text/html,application/xhtml+xml" },
       signal: AbortSignal.timeout(15_000),

@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import { applyProfileChange, canEditProfile, getDb, getUser, getUserByName, PROFILE_LISTS, type ProfileChange, type ProfileList, type User } from "../db";
 import { addDays, isDate, localDate, weekStart } from "../dates";
 import { getRecipe, importRecipeFromUrl, listMealPlans, searchRecipes } from "../mealie";
-import { readPage, webSearch } from "../web";
+import { assertPublicUrl, readPage, webSearch } from "../web";
 import { getWeek, updateNight } from "../week";
 import { weekBlock } from "./prompt";
 
@@ -235,10 +235,16 @@ export async function runTool(name: string, args: Args, ctx: ToolContext): Promi
       return readPage(String(args.url));
     case "import_recipe_url": {
       const url = String(args.url ?? "");
-      if (!/^https?:\/\//.test(url)) return { error: "That isn't a web link." };
+      // Mealie fetches this from inside the network, so hold it to the same rule as the link reader
+      let host: string;
+      try {
+        host = (await assertPublicUrl(url)).hostname;
+      } catch (e) {
+        return { error: (e as Error).message };
+      }
       const planFor = isDate(args.plan_for) ? args.plan_for : null;
-      const title = String(args.title ?? url);
-      const id = createAction(ctx, "import_recipe_url", { url, title, planFor }, `Save "${title}" to the recipe box`);
+      const title = String(args.title ?? url).slice(0, 100);
+      const id = createAction(ctx, "import_recipe_url", { url, title, planFor }, `Save "${title}" from ${host} to the recipe box`);
       return { status: "waiting for approval", actionId: id };
     }
     case "update_profile": {
@@ -278,6 +284,7 @@ export async function executeAction(actionId: number, user: User): Promise<{ ok:
     let message: string;
     const changed: ("week" | "profiles")[] = [];
     if (a.kind === "import_recipe_url") {
+      await assertPublicUrl(args.url); // DNS may have changed since Sal asked
       const r = await importRecipeFromUrl(args.url);
       message = `Saved "${r.name}" to the recipe box (slug ${r.slug}).`;
       if (args.planFor) {

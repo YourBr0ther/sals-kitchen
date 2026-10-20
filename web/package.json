@@ -10,12 +10,14 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "ipaddr.js": "^2.5.0",
     "next": "16.4.2",
     "node-ical": "^0.27.3",
     "openai": "^7.39.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "undici": "^7.30.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
